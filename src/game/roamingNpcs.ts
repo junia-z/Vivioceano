@@ -81,7 +81,7 @@ export const ROAMING_SHIP_NPCS: RoamingShipNpcDef[] = [
     level: 92,
     bounty: 2_250_000_000,
     flagColor: '#eab308',
-    routeIslandIds: ['elbaph', 'archipielago-sabaody', 'water-7', 'jaya', 'elbaph'],
+    routeIslandIds: ['elbaph', 'archipielago-sabaody', 'water-7', 'jaya'],
     legSeconds: 135,
     isSpecialEvent: true,
     windowStartMinute: 30,
@@ -341,14 +341,15 @@ export function getActiveRoamingShipNpcs(
     const tSec = ((win.elapsedWindowSec % totalCycleSec) + totalCycleSec) % totalCycleSec;
     const legIndex = Math.floor(tSec / def.legSeconds) % totalLegs;
     const nextIndex = (legIndex + 1) % totalLegs;
-    const legProgress = (tSec % def.legSeconds) / def.legSeconds;
+    const rawLegProgress = (tSec % def.legSeconds) / def.legSeconds;
+    const legProgress = 0.06 + rawLegProgress * 0.88;
 
     const fromIsland = route[legIndex];
     const toIsland = route[nextIndex];
     const coords = getNavigationPathCoords(fromIsland, toIsland);
     const posXYZ = sampleNavigationPathXYZ(coords, legProgress, 1);
     const [lat, lon] = xyzToLatLon(posXYZ);
-    const aheadXYZ = sampleNavigationPathXYZ(coords, Math.min(1, legProgress + 0.025), 1);
+    const aheadXYZ = sampleNavigationPathXYZ(coords, Math.min(0.99, legProgress + 0.025), 1);
     const headingLatLon = xyzToLatLon(aheadXYZ);
 
     activeList.push({

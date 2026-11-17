@@ -35,7 +35,7 @@ export const HorizontalOptionRail: React.FC<HorizontalOptionRailProps> = ({
   return (
     <div className="space-y-1.5" data-testid={testId}>
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="font-mono-num text-[11px] font-bold uppercase tracking-wider text-teal-300">
+        <span className="font-mono-num text-[11px] font-bold uppercase tracking-wider text-teal-700">
           {label}
         </span>
         {rightHint && <div className="flex items-center gap-1.5">{rightHint}</div>}
@@ -47,7 +47,7 @@ export const HorizontalOptionRail: React.FC<HorizontalOptionRailProps> = ({
           data-testid={testId ? `${testId}-prev` : undefined}
           aria-label={prevAriaLabel ?? `Anterior en ${label}`}
           onClick={() => scrollTrack(-1)}
-          className="flex h-9 w-8 shrink-0 items-center justify-center rounded-lg border border-slate-700 bg-[#0d1a2e] text-slate-200 hover:border-[#f5b82e] hover:text-[#f5b82e] active:scale-95 transition-colors cursor-pointer"
+          className="flex h-9 w-8 shrink-0 items-center justify-center rounded-lg border border-sky-200 bg-white/80 text-slate-700 hover:border-amber-500 hover:text-amber-700 active:scale-95 transition-colors cursor-pointer shadow-sm"
         >
           <ChevronLeft className="h-4 w-4" />
         </button>
@@ -65,7 +65,7 @@ export const HorizontalOptionRail: React.FC<HorizontalOptionRailProps> = ({
           data-testid={testId ? `${testId}-next` : undefined}
           aria-label={nextAriaLabel ?? `Siguiente en ${label}`}
           onClick={() => scrollTrack(1)}
-          className="flex h-9 w-8 shrink-0 items-center justify-center rounded-lg border border-slate-700 bg-[#0d1a2e] text-slate-200 hover:border-[#f5b82e] hover:text-[#f5b82e] active:scale-95 transition-colors cursor-pointer"
+          className="flex h-9 w-8 shrink-0 items-center justify-center rounded-lg border border-sky-200 bg-white/80 text-slate-700 hover:border-amber-500 hover:text-amber-700 active:scale-95 transition-colors cursor-pointer shadow-sm"
         >
           <ChevronRight className="h-4 w-4" />
         </button>

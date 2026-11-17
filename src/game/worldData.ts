@@ -247,7 +247,7 @@ export const FACTIONS: FactionOption[] = [
     subtitle: 'Navegan libres en busca de tesoros, duelos y fama propia.',
     defaultColor: '#dc2626',
     defaultEpithet: 'El Corsario Libre',
-    badgeColor: '#f59e0b',
+    badgeColor: '#b45309',
   },
   {
     id: 'marines',
@@ -256,7 +256,7 @@ export const FACTIONS: FactionOption[] = [
     subtitle: 'Patrullan fortalezas y mantienen el orden en los Cuatro Mares.',
     defaultColor: '#2563eb',
     defaultEpithet: 'Brazo de la Justicia',
-    badgeColor: '#60a5fa',
+    badgeColor: '#1d4ed8',
   },
   {
     id: 'revolucionarios',
@@ -265,7 +265,7 @@ export const FACTIONS: FactionOption[] = [
     subtitle: 'Operan desde las sombras para liberar reinos oprimidos.',
     defaultColor: '#0d9488',
     defaultEpithet: 'Llama Rebelde',
-    badgeColor: '#2dd4bf',
+    badgeColor: '#0f766e',
   },
   {
     id: 'aventureros',
@@ -274,7 +274,7 @@ export const FACTIONS: FactionOption[] = [
     subtitle: 'Exploran islas remotas, reliquias antiguas y rutas inéditas.',
     defaultColor: '#d97706',
     defaultEpithet: 'Cazador de Horizontes',
-    badgeColor: '#c084fc',
+    badgeColor: '#7e22ce',
   },
 ];
 
@@ -1724,13 +1724,18 @@ export const DEVIL_FRUITS = [
 ];
 
 export const PIRATE_ROLES: PirateRole[] = [
-  'Capitán',
-  'Espadachín',
+  'Grumete',
   'Navegante',
-  'Cocinero',
+  'Arqueólogo',
+  'Luchador',
+  'Ladrón',
+  'Espadachín',
   'Artillero',
   'Médico',
+  'Cocinero',
   'Músico',
+  'Timonel',
+  'Capitán',
 ];
 
 export const ORIGIN_SEAS: OriginSea[] = [
@@ -2403,49 +2408,49 @@ export const WEATHER_METADATA: Record<WeatherType, WeatherStatus> = {
     type: 'despejado',
     label: 'Despejado',
     description: 'Cielos abiertos y mar en calma ideal para combatir y navegar.',
-    color: '#38bdf8',
+    color: '#0284c7',
     affectsDevilFruit: false,
   },
   lluvia: {
     type: 'lluvia',
     label: 'Lluvia Intensa',
     description: 'Aguacero marino constante que debilita a usuarios de Fruta del Diablo.',
-    color: '#60a5fa',
+    color: '#1d4ed8',
     affectsDevilFruit: true,
   },
   tormenta: {
     type: 'tormenta',
     label: 'Tormenta Eléctrica',
     description: 'Lluvia torrencial y relámpagos; fuerte penalización a usuarios de Fruta.',
-    color: '#818cf8',
+    color: '#4338ca',
     affectsDevilFruit: true,
   },
   viento: {
     type: 'viento',
     label: 'Vientos Alisios',
     description: 'Ráfagas constantes que aceleran la navegación a vela.',
-    color: '#2dd4bf',
+    color: '#0f766e',
     affectsDevilFruit: false,
   },
   calor: {
     type: 'calor',
     label: 'Calor Abrasador',
     description: 'Aire seco y sol implacable en regiones desérticas o volcánicas.',
-    color: '#fb923c',
+    color: '#c2410c',
     affectsDevilFruit: false,
   },
   nieve: {
     type: 'nieve',
     label: 'Ventisca Helada',
     description: 'Nieve densa que entumece la agilidad en tierra.',
-    color: '#e0f2fe',
+    color: '#0369a1',
     affectsDevilFruit: true,
   },
   niebla: {
     type: 'niebla',
     label: 'Niebla Marina',
     description: 'Bruma húmeda y espesa que reduce visibilidad y reflejos.',
-    color: '#94a3b8',
+    color: '#475569',
     affectsDevilFruit: true,
   },
 };
@@ -3713,7 +3718,12 @@ export function getBossForIsland(island: Island): IslandBoss {
 
   const preset = NAMED_ISLAND_BOSSES[island.id];
   if (preset) {
-    return lruSet(bossRosterCache, island.id, { id: `boss_${island.id}`, ...preset });
+    const bossXp = Math.max(85, Math.round(preset.xpReward * 3.2 + island.dangerTier * 45));
+    return lruSet(bossRosterCache, island.id, {
+      id: `boss_${island.id}`,
+      ...preset,
+      xpReward: bossXp,
+    });
   }
   const h = hashNameSeed(island.id + island.name);
   const tier = island.dangerTier;
@@ -3745,7 +3755,7 @@ export function getBossForIsland(island: Island): IslandBoss {
     title: titles[h % titles.length],
     power: 8 + tier * 7 + (h % 4),
     bountyReward: 320_000 * tier + (tier >= 4 ? 700_000 : 0),
-    xpReward: 14 + tier * 9,
+    xpReward: 70 + tier * 50,
     berriesReward: 3 + tier * 3,
     race: bossRaces[h % bossRaces.length],
     outfitStyle: island.biome === 'marine' ? 'marine' : island.biome === 'pagoda' ? 'kimono' : 'coat',
@@ -6294,6 +6304,7 @@ export function getNpcsForIsland(island: Island): IslandNpcQuest[] {
       named.map((q, idx) => ({
         id: `quest_${island.id}_${idx + 1}`,
         ...q,
+        xpReward: Math.max(2, Math.min(6, 1 + island.dangerTier + (idx % 2))),
       }))
     );
   }
@@ -6378,12 +6389,12 @@ export function getNpcsForIsland(island: Island): IslandNpcQuest[] {
     const tpl = questTemplates[idx % questTemplates.length];
     return {
       id: `quest_${island.id}_${idx + 1}`,
-      npcName: npcFirstNames[(seed >> 1) % npcFirstNames.length],
+      npcName: npcFirstNames[((seed >> 1) + idx * 5) % npcFirstNames.length],
       npcRole: tpl.role,
       title: tpl.title,
       description: tpl.desc,
       zone: tpl.zone || zones[idx % zones.length],
-      xpReward: 8 + tier * 6 + idx * 2,
+      xpReward: Math.max(2, Math.min(6, 1 + tier + (idx % 2))),
       berriesReward: 2 + tier * 2 + idx,
       bountyReward: idx % 2 === 1 ? 90_000 * tier : 0,
       race: regionalRaces[(seed + idx) % regionalRaces.length],
@@ -6412,6 +6423,7 @@ export function getMiniBossesForIsland(island: Island): IslandMiniBoss[] {
       named.map((mb, idx) => ({
         id: `miniboss_${island.id}_${idx + 1}`,
         ...mb,
+        xpReward: Math.max(5, Math.min(15, 3 + island.dangerTier * 2 + (idx % 3))),
       }))
     );
   }
@@ -6460,7 +6472,7 @@ export function getMiniBossesForIsland(island: Island): IslandMiniBoss[] {
       title: `Subjefe de ${shortIsland}`,
       zone: zones[idx % zones.length],
       power: 6 + tier * 6 + idx * 3,
-      xpReward: 12 + tier * 7 + idx * 3,
+      xpReward: Math.max(5, Math.min(15, 3 + tier * 2 + (idx % 3))),
       berriesReward: 3 + tier * 2 + idx,
       bountyReward: 220_000 * tier + idx * 180_000,
       race: racePool[(seed + idx) % racePool.length],
@@ -6480,13 +6492,16 @@ export function getMiniBossesForIsland(island: Island): IslandMiniBoss[] {
 
 export function getIslandMissions(island: Island): IslandMissionOption[] {
   const boss = getBossForIsland(island);
+  const trainXp = 1 + Math.floor(island.dangerTier / 3);
+  const exploreXp = island.dangerTier >= 4 ? 2 : 1;
+  const duelXp = 2 + Math.floor(island.dangerTier / 3);
   return [
     {
       id: 'taberna',
       zone: 'taberna',
       title: 'Descansar en la Taberna',
       subtitle: 'Reúne rumores del puerto y recupera fuerzas con calma.',
-      xpReward: 5,
+      xpReward: 1,
       berriesReward: 1,
       bountyNote: 'Sin recompensa',
     },
@@ -6495,7 +6510,7 @@ export function getIslandMissions(island: Island): IslandMissionOption[] {
       zone: 'dojo',
       title: 'Entrenar en el Dojo',
       subtitle: 'Mejora tu nivel, fuerza y agilidad practicando técnicas.',
-      xpReward: 9 + island.dangerTier * 2,
+      xpReward: trainXp,
       berriesReward: 1,
       bountyNote: 'Sin recompensa',
     },
@@ -6504,7 +6519,7 @@ export function getIslandMissions(island: Island): IslandMissionOption[] {
       zone: 'ruinas',
       title: 'Explorar Ruinas y Costas',
       subtitle: 'Busca monedones y reliquias ocultas en la isla.',
-      xpReward: 7 + island.dangerTier * 2,
+      xpReward: exploreXp,
       berriesReward: 2 + island.dangerTier,
       bountyNote: 'Solo botín y XP',
     },
@@ -6513,7 +6528,7 @@ export function getIslandMissions(island: Island): IslandMissionOption[] {
       zone: 'puerto',
       title: 'Desafiar a Otro Jugador / Rival',
       subtitle: 'Combate contra otro personaje en la isla para subir tu recompensa.',
-      xpReward: 12 + island.dangerTier * 3,
+      xpReward: duelXp,
       berriesReward: 2 + island.dangerTier,
       bountyNote: 'Sube recompensa al ganar',
     },
@@ -6521,7 +6536,7 @@ export function getIslandMissions(island: Island): IslandMissionOption[] {
       id: 'jefe',
       zone: 'jefe',
       title: `Cazar al Jefe: ${boss.name}`,
-      subtitle: `${boss.title} · Poder recomendado ${boss.power}. Principal fuente de recompensa.`,
+      subtitle: `${boss.title} · Poder recomendado ${boss.power}. Principal fuente de XP y recompensa.`,
       xpReward: boss.xpReward,
       berriesReward: boss.berriesReward,
       bountyNote: `+฿ ${boss.bountyReward.toLocaleString('en-US')}`,

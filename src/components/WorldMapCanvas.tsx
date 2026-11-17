@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ArrowDown, ArrowUp, Compass, Globe, LocateFixed, Sparkles, ZoomIn, ZoomOut } from 'lucide-react';
+import { ArrowDown, ArrowUp, Compass, LocateFixed, Sparkles, ZoomIn, ZoomOut } from 'lucide-react';
 import {
   getEntitySpriteAppearance,
   getSpriteAppearanceKey,
@@ -35,6 +35,11 @@ import {
   getNpcsForIsland,
 } from '../game/worldData';
 import { getIslandPixelCanvas, hasIslandArtCached } from '../game/worldMapArt';
+import {
+  MAP_ZOOM_MAX,
+  MAP_ZOOM_MIN,
+  evaluateMapZoomTransition,
+} from '../game/zoomContinuum';
 
 export interface WorldMapFocusRequest {
   lat: number;
@@ -61,12 +66,21 @@ interface WorldMapCanvasProps {
   onSelectPirate: (pirateId: string) => void;
   onSelectRoamingNpc?: (npcId: string) => void;
   onZoomOutToGlobe?: (lat: number, lon: number) => void;
+  onZoomInToIsland?: (island: Island) => void;
   onSailToIsland?: (islandId: string) => void;
   onGoToSabaody?: () => void;
 }
 
 const MAP_W = 2400;
 const MAP_H = 1200;
+
+const INTERIOR_SLOT_COORDS: ReadonlyArray<readonly [number, number]> = [
+  [-0.18, 0.06],
+  [-0.08, -0.02],
+  [0.02, 0.1],
+  [-0.02, -0.14],
+  [0.1, 0.14],
+];
 
 function lonToMapX(lonDeg: number): number {
   const norm = (((lonDeg + 180) % 360) + 360) % 360;
@@ -83,6 +97,16 @@ function mapXYToLatLon(x: number, y: number): [number, number] {
   const lon = (normX / MAP_W) * 360 - 180;
   const lat = Math.max(-85, Math.min(85, 90 - (y / MAP_H) * 180));
   return [lat, lon];
+}
+
+function lerpWrappedLon(a: number, b: number, t: number): number {
+  let diff = b - a;
+  if (diff > 180) diff -= 360;
+  if (diff < -180) diff += 360;
+  let next = a + diff * t;
+  if (next > 180) next -= 360;
+  if (next < -180) next += 360;
+  return next;
 }
 
 let cachedBackdrop: HTMLCanvasElement | null = null;
@@ -248,18 +272,27 @@ export const WorldMapCanvas: React.FC<WorldMapCanvasProps> = ({
   onSelectPirate,
   onSelectRoamingNpc,
   onZoomOutToGlobe,
+  onZoomInToIsland,
   onSailToIsland,
   onGoToSabaody,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const initialZoom = Math.max(MAP_ZOOM_MIN, Math.min(MAP_ZOOM_MAX, initialFocus?.zoom ?? 1.65));
   const viewRef = useRef<{ centerLat: number; centerLon: number; zoom: number }>({
     centerLat: initialFocus?.lat ?? 4,
     centerLon: initialFocus?.lon ?? -45,
-    zoom: initialFocus?.zoom ?? 1.15,
+    zoom: initialZoom,
   });
+  const targetViewRef = useRef<{ centerLat: number; centerLon: number; zoom: number }>({
+    centerLat: initialFocus?.lat ?? 4,
+    centerLon: initialFocus?.lon ?? -45,
+    zoom: initialZoom,
+  });
+  const zoomLatchRef = useRef(false);
+  const lastReadoutRef = useRef(initialZoom);
 
   const [trenchSubmerged, setTrenchSubmerged] = useState(false);
-  const [zoomReadout, setZoomReadout] = useState<number>(viewRef.current.zoom);
+  const [zoomReadout, setZoomReadout] = useState<number>(initialZoom);
   const trenchSubmergedRef = useRef(trenchSubmerged);
   trenchSubmergedRef.current = trenchSubmerged;
 
@@ -279,6 +312,7 @@ export const WorldMapCanvas: React.FC<WorldMapCanvasProps> = ({
     onSelectPirate,
     onSelectRoamingNpc,
     onZoomOutToGlobe,
+    onZoomInToIsland,
   });
   propsRef.current = {
     islands,
@@ -296,16 +330,25 @@ export const WorldMapCanvas: React.FC<WorldMapCanvasProps> = ({
     onSelectPirate,
     onSelectRoamingNpc,
     onZoomOutToGlobe,
+    onZoomInToIsland,
   };
 
   useEffect(() => {
     if (!initialFocus) return;
+    const clampedZoom = Math.max(MAP_ZOOM_MIN, Math.min(MAP_ZOOM_MAX, initialFocus.zoom ?? 4.2));
     viewRef.current = {
       centerLat: initialFocus.lat,
       centerLon: initialFocus.lon,
-      zoom: Math.max(0.78, Math.min(18, initialFocus.zoom ?? 4.2)),
+      zoom: clampedZoom,
     };
-    setZoomReadout(viewRef.current.zoom);
+    targetViewRef.current = {
+      centerLat: initialFocus.lat,
+      centerLon: initialFocus.lon,
+      zoom: clampedZoom,
+    };
+    zoomLatchRef.current = false;
+    lastReadoutRef.current = clampedZoom;
+    setZoomReadout(clampedZoom);
   }, [initialFocus]);
 
   useEffect(() => {
@@ -314,7 +357,7 @@ export const WorldMapCanvas: React.FC<WorldMapCanvasProps> = ({
     }
   }, [selectedIslandId]);
 
-  // Persistent hit rects updated every draw so clicking works accurately on islands & ships
+  // Persistent hit rects updated every draw without reallocation
   const hitRegionsRef = useRef<
     Array<{ type: 'island' | 'pirate' | 'roaming_npc'; id: string; x: number; y: number; r: number }>
   >([]);
@@ -324,14 +367,110 @@ export const WorldMapCanvas: React.FC<WorldMapCanvasProps> = ({
     if (!canvas) return;
     const ctx = canvas.getContext('2d')!;
 
+    const syncCanvasSize = () => {
+      const parent = canvas.parentElement;
+      const pw = parent?.clientWidth || window.innerWidth;
+      const ph = parent?.clientHeight || window.innerHeight;
+      if (canvas.width !== pw || canvas.height !== ph) {
+        canvas.width = pw;
+        canvas.height = ph;
+      }
+    };
+    syncCanvasSize();
+
+    const resizeObserver = new ResizeObserver(() => {
+      syncCanvasSize();
+    });
+    if (canvas.parentElement) {
+      resizeObserver.observe(canvas.parentElement);
+    }
+
     let rafId = 0;
     let lastDraw = 0;
 
-    const getTransform = () => {
+    const DRAW_MARGIN_PX = 48;
+    const PRELOAD_FRINGE_PX = 280;
+    const MAX_PREWARM_PER_FRAME = 2;
+    const WRAP_SHIFTS = [-MAP_W, 0, MAP_W] as const;
+
+    let cachedIslandsRef: Island[] | null = null;
+    const islandLookup = new Map<string, Island>();
+
+    // Reusable per-frame scratch state (zero GC churn inside draw loop)
+    const _screenOut = { x: 0, y: 0 };
+    const _headOut = { x: 0, y: 0 };
+    const _hitsPool: Array<{
+      type: 'island' | 'pirate' | 'roaming_npc';
+      id: string;
+      x: number;
+      y: number;
+      r: number;
+    }> = [];
+    const _placedLabels: Array<{ x: number; y: number; w: number }> = [];
+    const _labelDrawPool: Array<{
+      text: string;
+      x: number;
+      y: number;
+      color: string;
+      font: string;
+    }> = [];
+    const _prewarmQueue: Array<{ isl: Island; variant: 'surface' | 'underwater' }> = [];
+    const _dockedScratch: Pirate[] = [];
+    const _interiorActors: Array<{
+      app: PirateSpriteAppearance;
+      baseX: number;
+      baseY: number;
+      seed: number;
+      tag?: string;
+      color?: string;
+    }> = [];
+
+    // 2-second bucket cache for red-dot candidate filtering & roaming NPC evaluation
+    let lastDotBucket = -1;
+    let cachedDotIslands: Island[] | null = null;
+    let cachedDotPirates: Pirate[] | null = null;
+    let cachedDotBots: BotPirate[] | null = null;
+    let cachedDotSelPir: string | null = null;
+    let cachedDotFilters: RedDotFilterId[] | undefined = undefined;
+    let cachedVisibleCandidates: ReturnType<typeof filterAndRankMapDots>['visible'] = [];
+
+    const draw = (nowMs: number) => {
+      if (document.hidden) {
+        rafId = 0;
+        return;
+      }
+      rafId = requestAnimationFrame(draw);
+      const dtMs = nowMs - lastDraw;
+      if (dtMs < 32) return; // smooth ~30fps CPU-friendly cadence
+      lastDraw = nowMs;
+
+      // Smooth exponential zoom & focus interpolation
+      const dtSec = Math.min(0.08, Math.max(0.01, dtMs * 0.001));
+      const lerpFactor = 1 - Math.exp(-dtSec * 15);
+      const v = viewRef.current;
+      const tv = targetViewRef.current;
+      if (Math.abs(tv.zoom - v.zoom) > 0.002) {
+        v.zoom += (tv.zoom - v.zoom) * lerpFactor;
+      } else {
+        v.zoom = tv.zoom;
+      }
+      if (Math.abs(tv.centerLat - v.centerLat) > 0.005) {
+        v.centerLat += (tv.centerLat - v.centerLat) * lerpFactor;
+      } else {
+        v.centerLat = tv.centerLat;
+      }
+      if (Math.abs(tv.centerLon - v.centerLon) > 0.005) {
+        v.centerLon = lerpWrappedLon(v.centerLon, tv.centerLon, lerpFactor);
+      } else {
+        v.centerLon = tv.centerLon;
+      }
+      if (Math.abs(v.zoom - lastReadoutRef.current) >= 0.05) {
+        lastReadoutRef.current = v.zoom;
+        setZoomReadout(v.zoom);
+      }
+
       const w = canvas.width;
       const h = canvas.height;
-      const v = viewRef.current;
-      // At zoom=1.0, full map width fits nicely with small margin
       const baseScale = Math.max(w / MAP_W, h / MAP_H);
       const scale = baseScale * v.zoom;
       const leftOffsetPx =
@@ -344,37 +483,7 @@ export const WorldMapCanvas: React.FC<WorldMapCanvasProps> = ({
       const cy = h * 0.5;
       const worldCenterX = lonToMapX(v.centerLon);
       const worldCenterY = latToMapY(v.centerLat);
-      return { w, h, scale, cx, cy, worldCenterX, worldCenterY };
-    };
 
-    const DRAW_MARGIN_PX = 48;
-    const PRELOAD_FRINGE_PX = 280;
-    const MAX_PREWARM_PER_FRAME = 2;
-
-    let cachedIslandsRef: Island[] | null = null;
-    const islandLookup = new Map<string, Island>();
-
-    const draw = (nowMs: number) => {
-      if (document.hidden) {
-        rafId = 0;
-        return;
-      }
-      rafId = requestAnimationFrame(draw);
-      if (nowMs - lastDraw < 40) return; // smooth ~25fps CPU friendly
-      lastDraw = nowMs;
-
-      const parent = canvas.parentElement;
-      if (parent) {
-        const pw = parent.clientWidth || window.innerWidth;
-        const ph = parent.clientHeight || window.innerHeight;
-        if (canvas.width !== pw || canvas.height !== ph) {
-          canvas.width = pw;
-          canvas.height = ph;
-        }
-      }
-
-      const { w, h, scale, cx, cy, worldCenterX, worldCenterY } = getTransform();
-      const v = viewRef.current;
       const {
         islands: curIslands,
         pirates: curPirates,
@@ -398,27 +507,48 @@ export const WorldMapCanvas: React.FC<WorldMapCanvasProps> = ({
       ctx.fillRect(0, 0, w, h);
 
       const backdrop = getBackdropCanvas();
-      const worldToScreen = (wx: number, wy: number): [number, number] => {
+      const projectToOut = (wx: number, wy: number, out: { x: number; y: number }) => {
         let dx = wx - worldCenterX;
-        if (dx > MAP_W / 2) dx -= MAP_W;
-        if (dx < -MAP_W / 2) dx += MAP_W;
-        return [cx + dx * scale, cy + (wy - worldCenterY) * scale];
+        if (dx > MAP_W * 0.5) dx -= MAP_W;
+        if (dx < -MAP_W * 0.5) dx += MAP_W;
+        out.x = cx + dx * scale;
+        out.y = cy + (wy - worldCenterY) * scale;
       };
 
-      // Tile horizontally (-MAP_W, 0, +MAP_W) so panning across ±180° is seamless
-      for (const wrapShift of [-MAP_W, 0, MAP_W]) {
-        const sx = cx + (0 + wrapShift - worldCenterX) * scale;
-        const sy = cy + (0 - worldCenterY) * scale;
-        const sw = MAP_W * scale;
-        const sh = MAP_H * scale;
-        if (sx + sw < -20 || sx > w + 20) continue;
-        ctx.drawImage(backdrop, sx, sy, sw, sh);
+      // Sub-rectangle backdrop blitting across horizontal wraps: draws ONLY visible pixels!
+      const swFull = MAP_W * scale;
+      const shFull = MAP_H * scale;
+      const syFull = cy - worldCenterY * scale;
+      for (let wIdx = 0; wIdx < WRAP_SHIFTS.length; wIdx++) {
+        const sxFull = cx + (WRAP_SHIFTS[wIdx] - worldCenterX) * scale;
+        if (sxFull + swFull <= 0 || sxFull >= w) continue;
+
+        const ix0 = Math.max(0, sxFull);
+        const iy0 = Math.max(0, syFull);
+        const ix1 = Math.min(w, sxFull + swFull);
+        const iy1 = Math.min(h, syFull + shFull);
+        if (ix1 <= ix0 || iy1 <= iy0) continue;
+
+        const srcX = Math.max(0, (ix0 - sxFull) / scale);
+        const srcY = Math.max(0, (iy0 - syFull) / scale);
+        const srcW = Math.min(MAP_W - srcX, (ix1 - ix0) / scale);
+        const srcH = Math.min(MAP_H - srcY, (iy1 - iy0) / scale);
+        if (srcW <= 0 || srcH <= 0) continue;
+
+        ctx.drawImage(backdrop, srcX, srcY, srcW, srcH, ix0, iy0, ix1 - ix0, iy1 - iy0);
       }
 
       // Active player voyage dashed golden route arc
-      const trackedPirate =
-        curPirates.find((p) => p.id === selPirId && p.sailingToIslandId) ??
-        curPirates.find((p) => p.sailingToIslandId);
+      let trackedPirate: Pirate | undefined;
+      for (let i = 0; i < curPirates.length; i++) {
+        const p = curPirates[i];
+        if (!p.sailingToIslandId) continue;
+        if (p.id === selPirId) {
+          trackedPirate = p;
+          break;
+        }
+        if (!trackedPirate) trackedPirate = p;
+      }
       if (trackedPirate && trackedPirate.sailingToIslandId) {
         const fromIsl = islandLookup.get(trackedPirate.islandId);
         const toIsl = islandLookup.get(trackedPirate.sailingToIslandId);
@@ -432,27 +562,28 @@ export const WorldMapCanvas: React.FC<WorldMapCanvasProps> = ({
           for (let step = 0; step <= 32; step++) {
             const xyz = sampleNavigationPathXYZ(coords, step / 32, 1);
             const [lat, lon] = xyzToLatLon(xyz);
-            const [px, py] = worldToScreen(lonToMapX(lon), latToMapY(lat));
-            if (step === 0) ctx.moveTo(px, py);
-            else ctx.lineTo(px, py);
+            projectToOut(lonToMapX(lon), latToMapY(lat), _screenOut);
+            if (step === 0) ctx.moveTo(_screenOut.x, _screenOut.y);
+            else ctx.lineTo(_screenOut.x, _screenOut.y);
           }
           ctx.stroke();
           ctx.restore();
         }
       }
 
-      const hits: Array<{ type: 'island' | 'pirate' | 'roaming_npc'; id: string; x: number; y: number; r: number }> = [];
-      const placedLabels: Array<{ x: number; y: number; w: number }> = [];
-      const prewarmQueue: Array<{ isl: Island; variant: 'surface' | 'underwater' }> = [];
+      _hitsPool.length = 0;
+      _placedLabels.length = 0;
+      _labelDrawPool.length = 0;
+      _prewarmQueue.length = 0;
       const tSec = nowMs * 0.001;
       const patrolStep = Math.floor(nowMs / 1800);
 
-      // Draw islands inside viewport + queue outer smoothness fringe for zero pop-in panning
+      // Draw visible islands + queue outer fringe prewarm
       for (let i = 0; i < curIslands.length; i++) {
         const isl = curIslands[i];
-        const wx = lonToMapX(isl.lon);
-        const wy = latToMapY(isl.lat);
-        const [sx, sy] = worldToScreen(wx, wy);
+        projectToOut(lonToMapX(isl.lon), latToMapY(isl.lat), _screenOut);
+        const sx = _screenOut.x;
+        const sy = _screenOut.y;
 
         const baseWorldSize = isl.isMiniIsland ? 46 : 74 * Math.sqrt(isl.scale ?? 1.0);
         const screenSize = baseWorldSize * scale;
@@ -468,14 +599,14 @@ export const WorldMapCanvas: React.FC<WorldMapCanvasProps> = ({
 
         if (!inDrawBounds) {
           if (
-            prewarmQueue.length < MAX_PREWARM_PER_FRAME &&
+            _prewarmQueue.length < MAX_PREWARM_PER_FRAME &&
             sx + halfScreen >= -PRELOAD_FRINGE_PX &&
             sx - halfScreen <= w + PRELOAD_FRINGE_PX &&
             sy + halfScreen >= -PRELOAD_FRINGE_PX &&
             sy - halfScreen <= h + PRELOAD_FRINGE_PX &&
             !hasIslandArtCached(isl.id, variant)
           ) {
-            prewarmQueue.push({ isl, variant });
+            _prewarmQueue.push({ isl, variant });
           }
           continue;
         }
@@ -493,30 +624,35 @@ export const WorldMapCanvas: React.FC<WorldMapCanvasProps> = ({
           ctx.restore();
         }
 
-        hits.push({ type: 'island', id: isl.id, x: sx, y: sy, r: Math.max(18, screenSize * 0.44) });
+        _hitsPool.push({
+          type: 'island',
+          id: isl.id,
+          x: sx,
+          y: sy,
+          r: Math.max(18, screenSize * 0.44),
+        });
 
-        // Live moving island interior NPCs / Bosses / Docked Players at DEEP interior zoom only!
+        // Live moving island interior NPCs / Bosses / Docked Players at deep zoom
         if (
-          v.zoom >= 7.0 &&
-          screenSize >= 260 &&
+          v.zoom >= 6.8 &&
+          screenSize >= 240 &&
           !isl.isMiniIsland &&
           (isl.id !== 'isla-hombres-pez' || trenchSubmergedRef.current)
         ) {
           const npcs = getNpcsForIsland(isl);
           const miniBosses = getMiniBossesForIsland(isl);
           const boss = getBossForIsland(isl);
-          const docked = curPirates.filter((p) => !p.sailingToIslandId && p.islandId === isl.id);
 
-          const actors: Array<{
-            app: PirateSpriteAppearance;
-            baseX: number;
-            baseY: number;
-            seed: number;
-            tag?: string;
-            color?: string;
-          }> = [];
+          _dockedScratch.length = 0;
+          for (let pIdx = 0; pIdx < curPirates.length; pIdx++) {
+            const p = curPirates[pIdx];
+            if (!p.sailingToIslandId && p.islandId === isl.id) {
+              _dockedScratch.push(p);
+            }
+          }
 
-          actors.push({
+          _interiorActors.length = 0;
+          _interiorActors.push({
             app: getEntitySpriteAppearance(boss, 'coat', 'robust'),
             baseX: 0.16,
             baseY: -0.1,
@@ -526,7 +662,7 @@ export const WorldMapCanvas: React.FC<WorldMapCanvasProps> = ({
           });
 
           for (let m = 0; m < miniBosses.length && m < 2; m++) {
-            actors.push({
+            _interiorActors.push({
               app: getEntitySpriteAppearance(miniBosses[m], 'coat', 'normal'),
               baseX: m === 0 ? 0.12 : -0.14,
               baseY: 0.04,
@@ -534,26 +670,19 @@ export const WorldMapCanvas: React.FC<WorldMapCanvasProps> = ({
             });
           }
 
-          const slotCoords: Array<[number, number]> = [
-            [-0.18, 0.06],
-            [-0.08, -0.02],
-            [0.02, 0.1],
-            [-0.02, -0.14],
-            [0.1, 0.14],
-          ];
           for (let qIdx = 0; qIdx < npcs.length && qIdx < 5; qIdx++) {
-            const [bx, by] = slotCoords[qIdx % slotCoords.length];
-            actors.push({
+            const slot = INTERIOR_SLOT_COORDS[qIdx % INTERIOR_SLOT_COORDS.length];
+            _interiorActors.push({
               app: getEntitySpriteAppearance(npcs[qIdx], 'shirt', 'normal'),
-              baseX: bx,
-              baseY: by,
+              baseX: slot[0],
+              baseY: slot[1],
               seed: qIdx + 31,
             });
           }
 
-          for (let dIdx = 0; dIdx < docked.length && dIdx < 4; dIdx++) {
-            const p = docked[dIdx];
-            actors.push({
+          for (let dIdx = 0; dIdx < _dockedScratch.length && dIdx < 4; dIdx++) {
+            const p = _dockedScratch[dIdx];
+            _interiorActors.push({
               app: getEntitySpriteAppearance(p, 'coat', 'normal'),
               baseX: -0.05 + dIdx * 0.05,
               baseY: 0.08,
@@ -563,7 +692,8 @@ export const WorldMapCanvas: React.FC<WorldMapCanvasProps> = ({
             });
           }
 
-          for (const act of actors) {
+          for (let aIdx = 0; aIdx < _interiorActors.length; aIdx++) {
+            const act = _interiorActors[aIdx];
             const phase = (patrolStep + act.seed) % 8;
             const dx = Math.sin(tSec * 1.4 + act.seed) * 0.028;
             const dy = Math.cos(tSec * 1.1 + act.seed * 1.7) * 0.02;
@@ -574,7 +704,7 @@ export const WorldMapCanvas: React.FC<WorldMapCanvasProps> = ({
             const sw = sh * (spriteCanvas.width / spriteCanvas.height);
             const ax = sx + (act.baseX + dx) * screenSize;
             const ay = sy + (act.baseY + dy) * screenSize;
-            ctx.drawImage(spriteCanvas, ax - sw / 2, ay - sh, sw, sh);
+            ctx.drawImage(spriteCanvas, ax - sw * 0.5, ay - sh, sw, sh);
             if (act.tag && screenSize >= 320) {
               ctx.font = '700 9px Plus Jakarta Sans, sans-serif';
               ctx.textAlign = 'center';
@@ -586,11 +716,11 @@ export const WorldMapCanvas: React.FC<WorldMapCanvasProps> = ({
           }
         }
 
-        // Island label (crisp single-line name clear of island art, matching image_ab1711ec.png)
+        // Island label (crisp single-line name clear of island art)
         const showLabel =
-          v.zoom >= 2.0 ||
+          v.zoom >= 1.8 ||
           isl.id === selIslId ||
-          (!isl.isMiniIsland && isl.dangerTier >= 4 && v.zoom >= 1.25);
+          (!isl.isMiniIsland && isl.dangerTier >= 4 && v.zoom >= 1.2);
 
         if (showLabel && v.zoom < 10.5) {
           const lx = sx;
@@ -600,32 +730,56 @@ export const WorldMapCanvas: React.FC<WorldMapCanvasProps> = ({
             : sy - screenSize * 0.44 - 8;
           const labelText = isl.isMiniIsland ? `${isl.name} ✦` : isl.name;
           const estW = labelText.length * 6.5;
-          const collides =
-            isl.id !== selIslId &&
-            placedLabels.some((r) => Math.abs(r.x - lx) < (r.w + estW) * 0.46 && Math.abs(r.y - ly) < 16);
+          let collides = false;
+          if (isl.id !== selIslId) {
+            for (let lIdx = 0; lIdx < _placedLabels.length; lIdx++) {
+              const r = _placedLabels[lIdx];
+              if (Math.abs(r.x - lx) < (r.w + estW) * 0.46 && Math.abs(r.y - ly) < 16) {
+                collides = true;
+                break;
+              }
+            }
+          }
           if (!collides) {
-            placedLabels.push({ x: lx, y: ly, w: estW });
-            ctx.save();
-            ctx.font = v.zoom >= 3.2 ? '800 12px Plus Jakarta Sans, sans-serif' : '700 11px Plus Jakarta Sans, sans-serif';
-            ctx.textAlign = 'center';
-            ctx.lineWidth = 3.5;
-            ctx.strokeStyle = '#040b17';
-            ctx.strokeText(labelText, lx, ly);
-            ctx.fillStyle =
-              isl.id === selIslId
-                ? '#fde047'
-                : isl.isMiniIsland
-                ? '#fef08a'
-                : '#f8fafc';
-            ctx.fillText(labelText, lx, ly);
-            ctx.restore();
+            _placedLabels.push({ x: lx, y: ly, w: estW });
+            _labelDrawPool.push({
+              text: labelText,
+              x: lx,
+              y: ly,
+              color:
+                isl.id === selIslId
+                  ? '#fde047'
+                  : isl.isMiniIsland
+                  ? '#fef08a'
+                  : '#f8fafc',
+              font:
+                v.zoom >= 3.2
+                  ? '800 12px Plus Jakarta Sans, sans-serif'
+                  : '700 11px Plus Jakarta Sans, sans-serif',
+            });
           }
         }
       }
 
-      // Warm up to 2 islands in the off-screen smoothness fringe without blocking visible frame
-      for (let q = 0; q < prewarmQueue.length; q++) {
-        getIslandPixelCanvas(prewarmQueue[q].isl, prewarmQueue[q].variant);
+      // Render all buffered island labels in a dedicated pass so neighboring islands never clip them
+      if (_labelDrawPool.length > 0) {
+        ctx.save();
+        ctx.textAlign = 'center';
+        ctx.lineWidth = 3.5;
+        ctx.strokeStyle = '#040b17';
+        for (let lIdx = 0; lIdx < _labelDrawPool.length; lIdx++) {
+          const lbl = _labelDrawPool[lIdx];
+          ctx.font = lbl.font;
+          ctx.strokeText(lbl.text, lbl.x, lbl.y);
+          ctx.fillStyle = lbl.color;
+          ctx.fillText(lbl.text, lbl.x, lbl.y);
+        }
+        ctx.restore();
+      }
+
+      // Warm up to 2 islands in the off-screen smoothness fringe
+      for (let q = 0; q < _prewarmQueue.length; q++) {
+        getIslandPixelCanvas(_prewarmQueue[q].isl, _prewarmQueue[q].variant);
       }
 
       // Helper to render either a Red Dot (far zoom) or Pixel Ship (closer zoom)
@@ -642,17 +796,18 @@ export const WorldMapCanvas: React.FC<WorldMapCanvasProps> = ({
         roamingNpcId?: string,
         badgeKind?: 'player' | 'roaming_special' | 'roaming' | 'special_event' | 'boss_troop' | 'fleet'
       ) => {
-        const [sx, sy] = worldToScreen(lonToMapX(lon), latToMapY(lat));
+        projectToOut(lonToMapX(lon), latToMapY(lat), _screenOut);
+        const sx = _screenOut.x;
+        const sy = _screenOut.y;
         if (sx < -30 || sx > w + 30 || sy < -30 || sy > h + 30) return;
 
         let angle = 0;
         if (headLatLon) {
-          const [hx, hy] = worldToScreen(lonToMapX(headLatLon[1]), latToMapY(headLatLon[0]));
-          angle = Math.atan2(hy - sy, hx - sx);
+          projectToOut(lonToMapX(headLatLon[1]), latToMapY(headLatLon[0]), _headOut);
+          angle = Math.atan2(_headOut.y - sy, _headOut.x - sx);
         }
 
         if (v.zoom < 2.6) {
-          // Far / Macro Zoom: Crisp Red Dots (puntos rojos) + tapered white wake
           if (headLatLon) {
             ctx.save();
             ctx.strokeStyle =
@@ -680,7 +835,12 @@ export const WorldMapCanvas: React.FC<WorldMapCanvasProps> = ({
           const dotSize = badgeKind === 'roaming_special' || isSelected ? 8 : 6;
           const halfDot = Math.round(dotSize / 2);
           ctx.fillStyle = frameColor;
-          ctx.fillRect(Math.round(sx - halfDot - 1), Math.round(sy - halfDot - 1), dotSize + 2, dotSize + 2);
+          ctx.fillRect(
+            Math.round(sx - halfDot - 1),
+            Math.round(sy - halfDot - 1),
+            dotSize + 2,
+            dotSize + 2
+          );
           ctx.fillStyle = '#ef4444';
           ctx.fillRect(Math.round(sx - halfDot), Math.round(sy - halfDot), dotSize, dotSize);
 
@@ -693,7 +853,6 @@ export const WorldMapCanvas: React.FC<WorldMapCanvasProps> = ({
             ctx.fillText(label, sx, sy - 10);
           }
         } else {
-          // Detailed Pixel Ship
           ctx.save();
           ctx.translate(sx, sy);
           if (isBubbleCoated) {
@@ -718,7 +877,6 @@ export const WorldMapCanvas: React.FC<WorldMapCanvasProps> = ({
             ctx.arc(0, 0, 13, 0, Math.PI * 2);
             ctx.stroke();
           }
-          // Wake
           if (headLatLon) {
             ctx.strokeStyle = 'rgba(186, 230, 253, 0.65)';
             ctx.lineWidth = 2;
@@ -727,7 +885,6 @@ export const WorldMapCanvas: React.FC<WorldMapCanvasProps> = ({
             ctx.lineTo(-Math.cos(angle) * 14, -Math.sin(angle) * 14);
             ctx.stroke();
           }
-          // Hull & Sail
           ctx.fillStyle = '#451a03';
           ctx.fillRect(-7, 1, 14, 5);
           ctx.fillStyle = '#92400e';
@@ -756,33 +913,53 @@ export const WorldMapCanvas: React.FC<WorldMapCanvasProps> = ({
         }
 
         if (pirateId) {
-          hits.push({ type: 'pirate', id: pirateId, x: sx, y: sy, r: 12 });
+          _hitsPool.push({ type: 'pirate', id: pirateId, x: sx, y: sy, r: 12 });
         } else if (roamingNpcId) {
-          hits.push({ type: 'roaming_npc', id: roamingNpcId, x: sx, y: sy, r: 14 });
+          _hitsPool.push({ type: 'roaming_npc', id: roamingNpcId, x: sx, y: sy, r: 14 });
         }
       };
 
-      // Rank & filter all visible vessels/red dots (players + ship-only roaming NPCs + world bots)
-      const activeRoamingNpcs = getActiveRoamingShipNpcs(curIslands, Date.now());
-      const dotCandidates = buildMapDotCandidates(
-        curPirates,
-        curBots,
-        activeRoamingNpcs,
-        selPirId
-      );
-      const { visible: visibleCandidates } = filterAndRankMapDots(
-        dotCandidates,
-        curRedDotFilters,
-        MAX_IMPORTANT_RED_DOTS
-      );
+      // Bucketed (2s) red-dot filtering & roaming NPC recomputation
+      const nowEpoch = Date.now();
+      const dotBucket = Math.floor(nowEpoch / 2000);
+      if (
+        dotBucket !== lastDotBucket ||
+        cachedDotIslands !== curIslands ||
+        cachedDotPirates !== curPirates ||
+        cachedDotBots !== curBots ||
+        cachedDotSelPir !== selPirId ||
+        cachedDotFilters !== curRedDotFilters
+      ) {
+        lastDotBucket = dotBucket;
+        cachedDotIslands = curIslands;
+        cachedDotPirates = curPirates;
+        cachedDotBots = curBots;
+        cachedDotSelPir = selPirId;
+        cachedDotFilters = curRedDotFilters;
 
-      for (let idx = 0; idx < visibleCandidates.length; idx++) {
-        const cand = visibleCandidates[idx];
+        const activeRoamingNpcs = getActiveRoamingShipNpcs(curIslands, nowEpoch);
+        const dotCandidates = buildMapDotCandidates(
+          curPirates,
+          curBots,
+          activeRoamingNpcs,
+          selPirId
+        );
+        cachedVisibleCandidates = filterAndRankMapDots(
+          dotCandidates,
+          curRedDotFilters,
+          MAX_IMPORTANT_RED_DOTS
+        ).visible;
+      }
+
+      for (let idx = 0; idx < cachedVisibleCandidates.length; idx++) {
+        const cand = cachedVisibleCandidates[idx];
         if (cand.kind === 'bot' && cand.bot) {
           const bot = cand.bot;
           const fromIsl = islandLookup.get(bot.fromIslandId);
           if (fromIsl) {
-            const [fx, fy] = worldToScreen(lonToMapX(fromIsl.lon), latToMapY(fromIsl.lat));
+            projectToOut(lonToMapX(fromIsl.lon), latToMapY(fromIsl.lat), _screenOut);
+            const fx = _screenOut.x;
+            const fy = _screenOut.y;
             if (bot.status !== 'sailing' || !bot.toIslandId || bot.toIslandId === bot.fromIslandId) {
               if (
                 fx < -PRELOAD_FRINGE_PX ||
@@ -800,7 +977,9 @@ export const WorldMapCanvas: React.FC<WorldMapCanvasProps> = ({
                 Math.abs(fromIsl.lon - toIsl.lon) < 165 &&
                 Math.sign(fromIsl.lon || 1) === Math.sign(toIsl.lon || 1)
               ) {
-                const [tx, ty] = worldToScreen(lonToMapX(toIsl.lon), latToMapY(toIsl.lat));
+                projectToOut(lonToMapX(toIsl.lon), latToMapY(toIsl.lat), _headOut);
+                const tx = _headOut.x;
+                const ty = _headOut.y;
                 if (
                   (fx < -PRELOAD_FRINGE_PX && tx < -PRELOAD_FRINGE_PX) ||
                   (fx > w + PRELOAD_FRINGE_PX && tx > w + PRELOAD_FRINGE_PX) ||
@@ -870,7 +1049,7 @@ export const WorldMapCanvas: React.FC<WorldMapCanvasProps> = ({
         }
       }
 
-      hitRegionsRef.current = hits;
+      hitRegionsRef.current = _hitsPool;
     };
 
     const handleVisibilityChange = () => {
@@ -882,6 +1061,7 @@ export const WorldMapCanvas: React.FC<WorldMapCanvasProps> = ({
 
     rafId = requestAnimationFrame(draw);
     return () => {
+      resizeObserver.disconnect();
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       cancelAnimationFrame(rafId);
     };
@@ -917,6 +1097,8 @@ export const WorldMapCanvas: React.FC<WorldMapCanvasProps> = ({
     const [nextLat, nextLon] = mapXYToLatLon(wx, wy);
     viewRef.current.centerLat = nextLat;
     viewRef.current.centerLon = nextLon;
+    targetViewRef.current.centerLat = nextLat;
+    targetViewRef.current.centerLon = nextLon;
   };
 
   const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -931,7 +1113,6 @@ export const WorldMapCanvas: React.FC<WorldMapCanvasProps> = ({
     const clickX = e.clientX - rect.left;
     const clickY = e.clientY - rect.top;
 
-    // Check pirate & roaming NPC ships first, then islands
     const hits = hitRegionsRef.current;
     for (const h of hits) {
       if (h.type === 'pirate' && Math.hypot(h.x - clickX, h.y - clickY) <= h.r) {
@@ -951,25 +1132,29 @@ export const WorldMapCanvas: React.FC<WorldMapCanvasProps> = ({
     }
   };
 
-  const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
+  const applyMapZoomStep = (
+    mult: number,
+    pointerClient?: { clientX: number; clientY: number }
+  ) => {
+    if (zoomLatchRef.current) return;
     const canvas = canvasRef.current;
-    const prevZoom = viewRef.current.zoom;
-    const factor = e.deltaY < 0 ? 1.18 : 0.85;
-    const rawNext = prevZoom * factor;
-    if (e.deltaY > 0 && prevZoom <= 0.82 && rawNext < 0.74 && propsRef.current.onZoomOutToGlobe) {
-      propsRef.current.onZoomOutToGlobe(viewRef.current.centerLat, viewRef.current.centerLon);
-      return;
-    }
-    const nextZoom = Math.max(0.78, Math.min(18, rawNext));
-    if (canvas && nextZoom !== prevZoom) {
+    const prevZoom = targetViewRef.current.zoom;
+    const rawNext = prevZoom * mult;
+    const deltaDir: 'in' | 'out' = mult > 1 ? 'in' : 'out';
+
+    let nextCenterLat = targetViewRef.current.centerLat;
+    let nextCenterLon = targetViewRef.current.centerLon;
+
+    if (canvas && pointerClient) {
       const rect = canvas.getBoundingClientRect();
-      const pointerX = e.clientX - rect.left;
-      const pointerY = e.clientY - rect.top;
+      const pointerX = pointerClient.clientX - rect.left;
+      const pointerY = pointerClient.clientY - rect.top;
       const w = canvas.width;
       const h = canvas.height;
       const baseScale = Math.max(w / MAP_W, h / MAP_H);
       const oldScale = baseScale * prevZoom;
-      const newScale = baseScale * nextZoom;
+      const clampedPreview = Math.max(MAP_ZOOM_MIN, Math.min(MAP_ZOOM_MAX, rawNext));
+      const newScale = baseScale * clampedPreview;
       const leftOffsetPx =
         propsRef.current.leftMenuOpen && w >= 1024
           ? 270
@@ -978,31 +1163,75 @@ export const WorldMapCanvas: React.FC<WorldMapCanvasProps> = ({
           : 0;
       const cx = (w + leftOffsetPx) * 0.5;
       const cy = h * 0.5;
-      const oldCenterX = lonToMapX(viewRef.current.centerLon);
-      const oldCenterY = latToMapY(viewRef.current.centerLat);
+      const oldCenterX = lonToMapX(nextCenterLon);
+      const oldCenterY = latToMapY(nextCenterLat);
       const worldUnderX = oldCenterX + (pointerX - cx) / oldScale;
       const worldUnderY = oldCenterY + (pointerY - cy) / oldScale;
-      const nextCenterX = worldUnderX - (pointerX - cx) / newScale;
-      const nextCenterY = Math.max(40, Math.min(MAP_H - 40, worldUnderY - (pointerY - cy) / newScale));
-      const [nLat, nLon] = mapXYToLatLon(nextCenterX, nextCenterY);
-      viewRef.current.centerLat = nLat;
-      viewRef.current.centerLon = nLon;
+      const targetCenterX = worldUnderX - (pointerX - cx) / newScale;
+      const targetCenterY = Math.max(
+        40,
+        Math.min(MAP_H - 40, worldUnderY - (pointerY - cy) / newScale)
+      );
+      [nextCenterLat, nextCenterLon] = mapXYToLatLon(targetCenterX, targetCenterY);
+    } else if (!pointerClient && deltaDir === 'in' && prevZoom >= 3.2 && propsRef.current.selectedIslandId) {
+      const selIsl = propsRef.current.islands.find(
+        (i) => i.id === propsRef.current.selectedIslandId
+      );
+      if (selIsl) {
+        nextCenterLat += (selIsl.lat - nextCenterLat) * 0.45;
+        nextCenterLon = lerpWrappedLon(nextCenterLon, selIsl.lon, 0.45);
+      }
     }
-    viewRef.current.zoom = nextZoom;
-    setZoomReadout(nextZoom);
+
+    const res = evaluateMapZoomTransition(
+      prevZoom,
+      rawNext,
+      deltaDir,
+      nextCenterLat,
+      nextCenterLon,
+      propsRef.current.islands,
+      propsRef.current.selectedIslandId
+    );
+
+    if (res.action === 'to_globe') {
+      if (propsRef.current.onZoomOutToGlobe) {
+        zoomLatchRef.current = true;
+        propsRef.current.onZoomOutToGlobe(res.lat, res.lon);
+      }
+      return;
+    }
+
+    if (res.action === 'to_island') {
+      if (propsRef.current.onZoomInToIsland) {
+        zoomLatchRef.current = true;
+        propsRef.current.onZoomInToIsland(res.island);
+      }
+      return;
+    }
+
+    targetViewRef.current = {
+      centerLat: nextCenterLat,
+      centerLon: nextCenterLon,
+      zoom: res.zoom,
+    };
+  };
+
+  const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
+    const mult = e.deltaY < 0 ? 1.2 : 0.83;
+    applyMapZoomStep(mult, { clientX: e.clientX, clientY: e.clientY });
   };
 
   const adjustZoom = (mult: number) => {
-    const next = Math.max(0.78, Math.min(18, viewRef.current.zoom * mult));
-    viewRef.current.zoom = next;
-    setZoomReadout(next);
+    applyMapZoomStep(mult);
   };
 
   const focusSelectedShip = () => {
     const p = pirates.find((x) => x.id === selectedPirateId) ?? pirates[0];
     if (!p) return;
     const [lat, lon] = getPirateLatLon(p, islands);
+    targetViewRef.current = { centerLat: lat, centerLon: lon, zoom: 4.5 };
     viewRef.current = { centerLat: lat, centerLon: lon, zoom: 4.5 };
+    lastReadoutRef.current = 4.5;
     setZoomReadout(4.5);
   };
 
@@ -1021,63 +1250,60 @@ export const WorldMapCanvas: React.FC<WorldMapCanvasProps> = ({
         className="h-full w-full cursor-grab active:cursor-grabbing touch-none"
       />
 
-      {/* Map Toolbar (Bottom-Right, clean dark panel without backdrop-blur) */}
-      <div className="pointer-events-auto fixed bottom-20 md:bottom-4 right-3 z-30 flex items-center gap-1.5 rounded-xl border border-[#22395d] bg-[#0a1426] p-1.5 shadow-2xl">
+      {/* Unified Continuum Zoom Toolbar (Bottom-Right, light frosted glass) */}
+      <div
+        data-testid="map-zoom-toolbar"
+        className="pointer-events-auto fixed bottom-20 md:bottom-4 right-3 z-30 flex items-center gap-1.5 rounded-xl border border-white/80 bg-white/84 backdrop-blur-sm p-1.5 shadow-[0_14px_38px_rgba(15,23,42,0.16)]"
+      >
         <button
           type="button"
           data-testid="map-zoom-in-btn"
-          onClick={() => adjustZoom(1.35)}
+          onClick={() => adjustZoom(1.38)}
           aria-label="Acercar mapa"
-          className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-700 bg-[#101f37] text-slate-100 hover:border-amber-400 cursor-pointer"
+          title="Acercar hacia el interior de la isla"
+          className="flex h-8 w-8 items-center justify-center rounded-lg border border-sky-200 bg-sky-50/90 text-slate-800 hover:border-amber-500 hover:bg-white cursor-pointer"
         >
           <ZoomIn className="h-4 w-4" />
         </button>
         <button
           type="button"
           data-testid="map-zoom-out-btn"
-          onClick={() => adjustZoom(0.74)}
+          onClick={() => adjustZoom(0.72)}
           aria-label="Alejar mapa"
-          className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-700 bg-[#101f37] text-slate-100 hover:border-amber-400 cursor-pointer"
+          title="Alejar hacia el Globo 3D"
+          className="flex h-8 w-8 items-center justify-center rounded-lg border border-sky-200 bg-sky-50/90 text-slate-800 hover:border-amber-500 hover:bg-white cursor-pointer"
         >
           <ZoomOut className="h-4 w-4" />
         </button>
-        <span className="px-1.5 font-mono-num text-[11px] font-bold text-slate-300">
-          {zoomReadout.toFixed(1)}x
+        <span
+          data-testid="map-zoom-readout"
+          className="px-1.5 font-mono-num text-[11px] font-bold text-sky-700 whitespace-nowrap"
+        >
+          {zoomReadout.toFixed(1)}x · Mapa 2D
         </span>
         <button
           type="button"
           data-testid="map-center-ship-btn"
           onClick={focusSelectedShip}
-          className="flex items-center gap-1 rounded-lg border border-slate-700 bg-[#101f37] px-2.5 py-1.5 text-[11px] font-bold text-amber-300 hover:border-amber-400 cursor-pointer"
+          className="flex items-center gap-1 rounded-lg border border-sky-200 bg-sky-50/90 px-2.5 py-1.5 text-[11px] font-bold text-amber-800 hover:border-amber-500 hover:bg-white cursor-pointer"
         >
           <LocateFixed className="h-3.5 w-3.5" />
           <span className="hidden sm:inline">Mi barco</span>
         </button>
-        {onZoomOutToGlobe && (
-          <button
-            type="button"
-            data-testid="map-to-globe-btn"
-            onClick={() => onZoomOutToGlobe(viewRef.current.centerLat, viewRef.current.centerLon)}
-            className="flex items-center gap-1 rounded-lg bg-sky-500 px-2.5 py-1.5 text-[11px] font-black text-slate-950 hover:bg-sky-400 cursor-pointer"
-          >
-            <Globe className="h-3.5 w-3.5" />
-            <span>Globo 3D</span>
-          </button>
-        )}
       </div>
 
       {/* Fish-Man Island Trench Interaction Card when selected on 2D Map */}
       {selectedIsFishman && (
         <div
           data-testid="map-trench-modal"
-          className="pointer-events-auto fixed bottom-32 md:bottom-16 right-3 z-30 w-80 rounded-2xl border border-cyan-400/60 bg-[#071529] p-3.5 text-slate-100 shadow-2xl"
+          className="pointer-events-auto fixed bottom-32 md:bottom-16 right-3 z-30 w-80 rounded-2xl border border-cyan-300/90 bg-white/86 backdrop-blur-sm p-3.5 text-slate-900 shadow-[0_14px_38px_rgba(15,23,42,0.18)]"
         >
           <div className="flex items-center justify-between gap-2">
             <div>
-              <div className="text-[10px] font-black uppercase tracking-wider text-cyan-300">
+              <div className="text-[10px] font-black uppercase tracking-wider text-cyan-700">
                 {trenchSubmerged ? 'Reino de Ryugu · 10,000 m' : 'Fosa Abisal · Isla de los Hombres-Pez'}
               </div>
-              <h3 className="font-display text-sm font-black text-white">
+              <h3 className="font-display text-sm font-black text-slate-900">
                 {trenchSubmerged ? 'Palacio Ryugu bajo el mar' : 'Fosa oceánica abisal'}
               </h3>
             </div>
@@ -1085,13 +1311,13 @@ export const WorldMapCanvas: React.FC<WorldMapCanvasProps> = ({
               type="button"
               data-testid="map-trench-toggle-btn"
               onClick={() => setTrenchSubmerged((prev) => !prev)}
-              className="flex items-center gap-1 rounded-lg bg-cyan-400 px-2.5 py-1.5 text-[11px] font-black text-slate-950 hover:bg-cyan-300 cursor-pointer shrink-0"
+              className="flex items-center gap-1 rounded-lg bg-cyan-600 px-2.5 py-1.5 text-[11px] font-black text-white hover:bg-cyan-500 cursor-pointer shrink-0"
             >
               {trenchSubmerged ? <ArrowUp className="h-3.5 w-3.5" /> : <ArrowDown className="h-3.5 w-3.5" />}
               <span>{trenchSubmerged ? 'Subir' : 'Bajar'}</span>
             </button>
           </div>
-          <p className="mt-1.5 text-[11px] leading-relaxed text-slate-300">
+          <p className="mt-1.5 text-[11px] leading-relaxed text-slate-700">
             {trenchSubmerged
               ? 'La doble burbuja protege la Colina Coral y el Palacio Ryugu bajo el Árbol Solar Eve.'
               : 'Pulsa «Bajar» para descender 10,000 metros por la fosa. Para navegar aquí necesitas revestir tu barco en una burbuja de Sabaody.'}
@@ -1102,7 +1328,7 @@ export const WorldMapCanvas: React.FC<WorldMapCanvasProps> = ({
                 <button
                   type="button"
                   onClick={() => onSailToIsland('isla-hombres-pez')}
-                  className="flex items-center gap-1 rounded-lg bg-amber-400 px-2.5 py-1.5 text-[11px] font-black text-slate-950 hover:bg-amber-300 cursor-pointer"
+                  className="flex items-center gap-1 rounded-lg bg-[#f5b82e] px-2.5 py-1.5 text-[11px] font-black text-slate-950 hover:bg-amber-300 cursor-pointer"
                 >
                   <Compass className="h-3.5 w-3.5" />
                   <span>Zarpar con burbuja</span>
@@ -1113,7 +1339,7 @@ export const WorldMapCanvas: React.FC<WorldMapCanvasProps> = ({
                 <button
                   type="button"
                   onClick={onGoToSabaody}
-                  className="flex items-center gap-1 rounded-lg border border-cyan-400/50 bg-cyan-950/60 px-2.5 py-1.5 text-[11px] font-bold text-cyan-200 hover:bg-cyan-900/60 cursor-pointer"
+                  className="flex items-center gap-1 rounded-lg border border-cyan-300 bg-cyan-50/90 px-2.5 py-1.5 text-[11px] font-bold text-cyan-800 hover:bg-cyan-100 cursor-pointer"
                 >
                   <Sparkles className="h-3.5 w-3.5" />
                   <span>Ir a Sabaody por burbuja</span>

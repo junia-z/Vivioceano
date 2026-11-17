@@ -402,6 +402,13 @@ export function buildPirateSpriteRuns(input: PirateSpriteAppearance): PixelRun[]
   if (role === 'Navegante') {
     rect(4, 10, 1, 8, '#38bdf8');
     px(4, 9, '#fde047');
+  } else if (role === 'Arqueólogo') {
+    rect(4, 12, 2, 4, '#a16207');
+    px(4, 12, '#fef08a');
+    px(5, 13, '#38bdf8');
+  } else if (role === 'Timonel') {
+    rect(4, 11, 2, 5, '#92400e');
+    px(4, 13, '#fbbf24');
   } else if (role === 'Músico') {
     rect(4, 12, 2, 2, '#14b8a6');
     px(5, 11, '#5eead4');
@@ -586,6 +593,12 @@ export function buildPirateSpriteRuns(input: PirateSpriteAppearance): PixelRun[]
   } else if (role === 'Médico') {
     px(torsoX - 1, 16, '#f8fafc');
     px(torsoX - 1, 17, '#ef4444');
+  } else if (role === 'Luchador') {
+    px(torsoX - 2, 16, '#dc2626');
+    px(torsoRight + 2, 16, '#dc2626');
+  } else if (role === 'Ladrón') {
+    px(torsoX - 1, 17, '#facc15');
+    px(torsoRight + 2, 16, '#94a3b8');
   }
 
   rect(7, 13, 8, 1, OUTLINE);

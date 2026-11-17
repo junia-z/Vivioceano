@@ -402,7 +402,7 @@ export function subscribeUserPirates(
             name: pirateName,
             epithet: String(data.epithet || ''),
             faction: data.faction || 'piratas',
-            role: data.role || 'Capitán',
+            role: data.role || 'Grumete',
             race: data.race || 'humano',
             originSea: data.originSea || 'Mar del Este',
             dream: String(data.dream || ''),

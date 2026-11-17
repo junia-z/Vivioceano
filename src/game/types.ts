@@ -17,13 +17,26 @@ export type OriginSea =
 export type Faction = 'piratas' | 'marines' | 'revolucionarios' | 'aventureros';
 
 export type PirateRole =
-  | 'Capitán'
-  | 'Espadachín'
+  | 'Grumete'
   | 'Navegante'
-  | 'Cocinero'
+  | 'Arqueólogo'
+  | 'Luchador'
+  | 'Ladrón'
+  | 'Espadachín'
   | 'Artillero'
   | 'Médico'
-  | 'Músico';
+  | 'Cocinero'
+  | 'Músico'
+  | 'Timonel'
+  | 'Capitán';
+
+export interface RoleAffinities {
+  combat?: number;
+  explore?: number;
+  voyage?: number;
+  tavern?: number;
+  quest?: number;
+}
 
 export type FlagEmblem = 'skull' | 'sun' | 'heart' | 'anchor' | 'flame' | 'crown';
 
@@ -372,6 +385,7 @@ export interface Pirate {
   completedQuestIds?: string[];
   defeatedMiniBossIds?: string[];
   bubbleCoated?: boolean;
+  roleAffinities?: RoleAffinities;
 }
 
 export type WorldEventType =
@@ -501,7 +515,6 @@ export interface CreatePirateInput {
   name: string;
   epithet: string;
   faction: Faction;
-  role?: PirateRole;
   race?: PirateRace;
   originSea: OriginSea;
   dream: string;

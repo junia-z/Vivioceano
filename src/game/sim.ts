@@ -117,7 +117,7 @@ export function getCharacterSpriteScale(race?: PirateRace, islandId?: string): n
 
 export function xpForNextLevel(level: number): number {
   const safeLevel = Math.max(1, Math.floor(level));
-  return 20 + (safeLevel - 1) * 14;
+  return 140 + (safeLevel - 1) * 120;
 }
 
 export function getRankInfo(level: number): {
@@ -343,6 +343,250 @@ export function computePirateStats(
     agilidad: Math.max(1, Math.round(agilidad)),
     aguante: Math.max(1, Math.round(aguante)),
     ingenio: Math.max(1, Math.round(ingenio)),
+  };
+}
+
+const SWORD_WEAPON_REGEX =
+  /katana|sable|espada|hoja|cuchilla|meito|saijo|shusui|enma|gryphon|napoleon/i;
+
+export interface RoleEvolutionInfo {
+  role: PirateRole;
+  dominantAxis: 'fuerza' | 'agilidad' | 'aguante' | 'ingenio' | 'equilibrado';
+  reason: string;
+  nextHint: string;
+}
+
+export function getRoleEvolutionInfo(
+  pirate: Pick<
+    Pirate,
+    | 'level'
+    | 'wins'
+    | 'bossesDefeated'
+    | 'devilFruit'
+    | 'physicalTraits'
+    | 'mentalTraits'
+    | 'bodyBuild'
+    | 'race'
+    | 'equipped'
+    | 'weaponStyle'
+    | 'crewName'
+    | 'roleAffinities'
+  >,
+  activeWeather?: WeatherStatus | null
+): RoleEvolutionInfo {
+  const lv = Math.max(1, pirate.level || 1);
+  const stats = computePirateStats(pirate, activeWeather);
+  const traits = new Set([...pirate.physicalTraits, ...pirate.mentalTraits]);
+  const aff = pirate.roleAffinities ?? {};
+  const combatAct = aff.combat ?? 0;
+  const exploreAct = aff.explore ?? 0;
+  const voyageAct = aff.voyage ?? 0;
+  const tavernAct = aff.tavern ?? 0;
+  const questAct = aff.quest ?? 0;
+  const totalActions = combatAct + exploreAct + voyageAct + tavernAct + questAct;
+
+  // Baseline growth per level so natural base stats don't bias everyone toward Fuerza
+  const baseF = 4 + lv * 2;
+  const baseA = 4 + Math.floor(lv * 1.5);
+  const baseG = 4 + Math.floor(lv * 1.3);
+  const baseI = 4 + Math.floor(lv * 1.3);
+
+  const fuerzaScore = stats.fuerza - baseF + combatAct * 0.85;
+  const agilidadScore = stats.agilidad - baseA + exploreAct * 0.4 + voyageAct * 0.2;
+  const aguanteScore = stats.aguante - baseG + tavernAct * 0.5 + questAct * 0.25;
+  const ingenioScore =
+    stats.ingenio - baseI + exploreAct * 0.45 + questAct * 0.45 + voyageAct * 0.4;
+
+  const ranked = (
+    [
+      { axis: 'fuerza', score: fuerzaScore },
+      { axis: 'agilidad', score: agilidadScore },
+      { axis: 'aguante', score: aguanteScore },
+      { axis: 'ingenio', score: ingenioScore },
+    ] as const
+  )
+    .slice()
+    .sort((a, b) => b.score - a.score);
+
+  const top = ranked[0];
+  const second = ranked[1];
+  const lead = top.score - second.score;
+
+  const equippedArma = getEquipmentItem(pirate.equipped?.arma);
+  const hasSwordWeapon =
+    pirate.weaponStyle === 'sword' ||
+    Boolean(
+      equippedArma &&
+        SWORD_WEAPON_REGEX.test(`${equippedArma.name} ${equippedArma.description}`)
+    );
+
+  // Balanced newcomer before stats or island actions differentiate them
+  if (lv === 1 && totalActions < 2 && lead < 3.5 && !hasSwordWeapon) {
+    return {
+      role: 'Grumete',
+      dominantAxis: 'equilibrado',
+      reason: 'Aprendiz en formación con estadísticas equilibradas',
+      nextHint:
+        'Entrena (Luchador/Espadachín), explora ruinas (Arqueólogo/Ladrón) o navega (Navegante/Timonel).',
+    };
+  }
+
+  // Veteran Crew Captain: unlocked naturally via leadership, victories & crew
+  const hasCrew = Boolean(pirate.crewName && pirate.crewName !== 'Sin tripulación');
+  const isLeaderProfile =
+    traits.has('ambicioso') || traits.has('estratega') || traits.has('instinto_haki');
+  if (
+    hasCrew &&
+    lv >= 6 &&
+    ((pirate.bossesDefeated || 0) >= 2 || pirate.wins >= 8) &&
+    (isLeaderProfile || lead < 3)
+  ) {
+    return {
+      role: 'Capitán',
+      dominantAxis: top.axis,
+      reason: `Lidera «${pirate.crewName}» tras ${pirate.bossesDefeated || 0} jefes y ${pirate.wins} victorias`,
+      nextHint: 'Rango de mando supremo alcanzado al liderar tu propia tripulación.',
+    };
+  }
+
+  if (top.axis === 'ingenio') {
+    if (exploreAct + questAct >= voyageAct + 1 || (traits.has('astuto') && exploreAct >= 1)) {
+      return {
+        role: 'Arqueólogo',
+        dominantAxis: 'ingenio',
+        reason: 'Alto Ingenio combinado con exploración de ruinas y encargos',
+        nextHint: 'Navega entre islas para orientarte más hacia Navegante.',
+      };
+    }
+    if (tavernAct >= 3 && traits.has('suerte_pirata') && !traits.has('navegante_nato')) {
+      return {
+        role: 'Músico',
+        dominantAxis: 'ingenio',
+        reason: 'Ingenio carismático forjado entre tabernas y viajes',
+        nextHint: 'Explora ruinas (Arqueólogo) o surca rutas largas (Navegante).',
+      };
+    }
+    return {
+      role: 'Navegante',
+      dominantAxis: 'ingenio',
+      reason: 'Predominio de Ingenio y orientación marítima',
+      nextHint: 'Explora ruinas antiguas y misiones para inclinarte hacia Arqueólogo.',
+    };
+  }
+
+  if (top.axis === 'fuerza') {
+    if (hasSwordWeapon) {
+      return {
+        role: 'Espadachín',
+        dominantAxis: 'fuerza',
+        reason: 'Gran Fuerza potenciada por un arma de filo equipada',
+        nextHint: 'Lucha sin espada equipada para destacar como Luchador puro.',
+      };
+    }
+    if (
+      traits.has('ojo_halcon') &&
+      stats.ingenio >= stats.agilidad &&
+      pirate.weaponStyle !== 'kanabo' &&
+      pirate.weaponStyle !== 'mace'
+    ) {
+      return {
+        role: 'Artillero',
+        dominantAxis: 'fuerza',
+        reason: 'Fuerza combinada con puntería e Ingenio táctico',
+        nextHint: 'Equipa una hoja para evolucionar a Espadachín o entrena cuerpo a cuerpo.',
+      };
+    }
+    return {
+      role: 'Luchador',
+      dominantAxis: 'fuerza',
+      reason: 'Predominio de Fuerza física y combate directo',
+      nextHint: 'Equipa una espada o sable para evolucionar a Espadachín.',
+    };
+  }
+
+  if (top.axis === 'agilidad') {
+    if (hasSwordWeapon && combatAct > exploreAct + 2) {
+      return {
+        role: 'Espadachín',
+        dominantAxis: 'agilidad',
+        reason: 'Agilidad veloz combinada con dominio de la espada',
+        nextHint: 'Prioriza exploraciones y saqueos para destacar como Ladrón.',
+      };
+    }
+    return {
+      role: 'Ladrón',
+      dominantAxis: 'agilidad',
+      reason: 'Predominio de Agilidad, reflejos y saqueo rápido',
+      nextHint: 'Equipa una espada y entrena en el dojo si buscas el camino de Espadachín.',
+    };
+  }
+
+  // top.axis === 'aguante'
+  if (questAct >= 2 || traits.has('sangre_fria')) {
+    return {
+      role: 'Médico',
+      dominantAxis: 'aguante',
+      reason: 'Gran Aguante y temple sereno en misiones de apoyo',
+      nextHint: 'Descansa en tabernas (Cocinero) o realiza travesías largas (Timonel).',
+    };
+  }
+  if (tavernAct >= 2 && voyageAct === 0) {
+    return {
+      role: 'Cocinero',
+      dominantAxis: 'aguante',
+      reason: 'Aguante resistente curtido en las tabernas del puerto',
+      nextHint: 'Emprende travesías marítimas para destacar como Timonel.',
+    };
+  }
+  return {
+    role: 'Timonel',
+    dominantAxis: 'aguante',
+    reason: 'Predominio de Aguante y resistencia en alta mar',
+    nextHint: 'Completa encargos de isla para evolucionar hacia Médico.',
+  };
+}
+
+export function computeEvolvedRole(
+  pirate: Parameters<typeof getRoleEvolutionInfo>[0],
+  activeWeather?: WeatherStatus | null
+): PirateRole {
+  return getRoleEvolutionInfo(pirate, activeWeather).role;
+}
+
+function applyRoleEvolution(
+  pirate: Pirate,
+  affinityDelta?: Partial<Record<'combat' | 'explore' | 'voyage' | 'tavern' | 'quest', number>>,
+  activeWeather?: WeatherStatus | null
+): { pirate: Pirate; roleChanged: boolean; previousRole: PirateRole; nextRole: PirateRole } {
+  const prevRole = pirate.role;
+  const prevAff = pirate.roleAffinities ?? {};
+  const nextAff = affinityDelta
+    ? {
+        combat: (prevAff.combat ?? 0) + (affinityDelta.combat ?? 0),
+        explore: (prevAff.explore ?? 0) + (affinityDelta.explore ?? 0),
+        voyage: (prevAff.voyage ?? 0) + (affinityDelta.voyage ?? 0),
+        tavern: (prevAff.tavern ?? 0) + (affinityDelta.tavern ?? 0),
+        quest: (prevAff.quest ?? 0) + (affinityDelta.quest ?? 0),
+      }
+    : prevAff;
+
+  const cleanAff: Pirate['roleAffinities'] = {};
+  if (nextAff.combat) cleanAff.combat = nextAff.combat;
+  if (nextAff.explore) cleanAff.explore = nextAff.explore;
+  if (nextAff.voyage) cleanAff.voyage = nextAff.voyage;
+  if (nextAff.tavern) cleanAff.tavern = nextAff.tavern;
+  if (nextAff.quest) cleanAff.quest = nextAff.quest;
+
+  const candidate: Pirate = {
+    ...pirate,
+    roleAffinities: Object.keys(cleanAff).length > 0 ? cleanAff : undefined,
+  };
+  const nextRole = computeEvolvedRole(candidate, activeWeather);
+  return {
+    pirate: { ...candidate, role: nextRole },
+    roleChanged: nextRole !== prevRole,
+    previousRole: prevRole,
+    nextRole,
   };
 }
 
@@ -747,14 +991,14 @@ export function spawnPlayerPirate(
     mentalTraits: input.mentalTraits,
   });
 
-  const pirate: Pirate = {
+  const basePirate: Pirate = {
     id,
     ownerId,
     isPlayerOwned: true,
     name: cleanName,
     epithet: cleanEpithet,
     faction: factionInfo.id,
-    role: input.role ?? 'Capitán',
+    role: 'Grumete',
     race: input.race ?? 'humano',
     originSea: input.originSea,
     dream: input.dream.trim() || 'Explorar cada rincón de Vivid Ocean.',
@@ -808,6 +1052,7 @@ export function spawnPlayerPirate(
     completedQuestIds: [],
     defeatedMiniBossIds: [],
   };
+  const pirate = applyRoleEvolution(basePirate).pirate;
 
   const factionPhrase =
     pirate.faction === 'marines'
@@ -849,19 +1094,18 @@ export function spawnPlayerPirate(
 export function updatePirateCrew(
   world: WorldState,
   pirateId: string,
-  payload: { crewName: string; role: PirateRole; flagColor: string },
+  payload: { crewName: string; flagColor: string },
   nowMs = Date.now()
 ): { world: WorldState; pirate: Pirate | null; event: WorldEvent | null } {
   const cleanCrew = payload.crewName.trim().slice(0, 48) || 'Sin tripulación';
   let updated: Pirate | null = null;
   const pirates = world.pirates.map((p) => {
     if (p.id !== pirateId) return p;
-    updated = {
+    updated = applyRoleEvolution({
       ...p,
       crewName: cleanCrew,
-      role: payload.role,
       flagColor: payload.flagColor || p.flagColor,
-    };
+    }).pirate;
     return updated;
   });
 
@@ -923,12 +1167,11 @@ export function updatePirateProfile(
   let updated: Pirate | null = null;
   const pirates = world.pirates.map((p) => {
     if (p.id !== pirateId) return p;
-    updated = {
+    updated = applyRoleEvolution({
       ...p,
       name: cleanName,
       epithet: cleanEpithet,
       faction: factionInfo.id,
-      role: input.role ?? p.role,
       // Race, hair, skin tone, and body build are locked once created
       race: p.race ?? 'humano',
       originSea: input.originSea,
@@ -973,7 +1216,7 @@ export function updatePirateProfile(
             allMapIslands.find((i) => i.id === p.sailingToIslandId) ?? allMapIslands[0]
           )
         : Number((BASE_SAIL_SPEED * mods.speedMult).toFixed(4)),
-    };
+    }).pirate;
     return updated;
   });
 
@@ -1078,13 +1321,13 @@ export function equipPirateItem(
     const inv = p.inventory ?? [];
     if (!inv.includes(item.id)) return p;
     const prevEquipped = p.equipped ?? {};
-    updated = {
+    updated = applyRoleEvolution({
       ...p,
       equipped: {
         ...prevEquipped,
         [item.slot]: item.id,
       },
-    };
+    }).pirate;
     return updated;
   });
   return {
@@ -1102,13 +1345,13 @@ export function unequipPirateSlot(
   const pirates = world.pirates.map((p) => {
     if (p.id !== pirateId) return p;
     const prevEquipped = p.equipped ?? {};
-    updated = {
+    updated = applyRoleEvolution({
       ...p,
       equipped: {
         ...prevEquipped,
         [slot]: null,
       },
-    };
+    }).pirate;
     return updated;
   });
   return {
@@ -1611,14 +1854,19 @@ export function runIslandMission(
   };
 
   if (missionId === 'taberna') {
-    const xpRes = awardXpToPirate(target, 5);
-    const updated: Pirate = {
-      ...xpRes.pirate,
-      berries: xpRes.pirate.berries + 1,
-      islandSpot: 'taberna',
-      islandActivity: `En la taberna de ${island.name}`,
-      cooldownSec: 10,
-    };
+    const xpRes = awardXpToPirate(target, 1);
+    const evo = applyRoleEvolution(
+      {
+        ...xpRes.pirate,
+        berries: xpRes.pirate.berries + 1,
+        islandSpot: 'taberna',
+        islandActivity: `En la taberna de ${island.name}`,
+        cooldownSec: 10,
+      },
+      { tavern: 1 },
+      activeWeather
+    );
+    const updated = evo.pirate;
     const ev: WorldEvent = {
       id: `ev_${nowMs.toString(36)}_tav_${Math.floor(rng() * 99999)}`,
       type: 'dock',
@@ -1627,7 +1875,7 @@ export function runIslandMission(
       pirateId: updated.id,
       pirateName: updated.name,
       isPlayerRelated: true,
-      message: `${updated.name} descansa en la taberna de ${island.name} y gana +5 XP${xpRes.leveledUp ? ` (¡Sube a Nivel ${updated.level}!)` : ''}.`,
+      message: `${updated.name} descansa en la taberna de ${island.name} y gana +1 XP${xpRes.leveledUp ? ` (¡Sube a Nivel ${updated.level}!)` : ''}${evo.roleChanged ? ` · ¡Evoluciona a ${evo.nextRole}!` : ''}.`,
       bountyDelta: 0,
       day: world.day,
       timeLabel,
@@ -1638,15 +1886,20 @@ export function runIslandMission(
   }
 
   if (missionId === 'entrenar') {
-    const xpGain = 9 + island.dangerTier * 2;
+    const xpGain = 1 + Math.floor(island.dangerTier / 3);
     const xpRes = awardXpToPirate(target, xpGain);
-    const updated: Pirate = {
-      ...xpRes.pirate,
-      berries: xpRes.pirate.berries + 1,
-      islandSpot: 'dojo',
-      islandActivity: `Entrenando en el dojo de ${island.name}`,
-      cooldownSec: 11,
-    };
+    const evo = applyRoleEvolution(
+      {
+        ...xpRes.pirate,
+        berries: xpRes.pirate.berries + 1,
+        islandSpot: 'dojo',
+        islandActivity: `Entrenando en el dojo de ${island.name}`,
+        cooldownSec: 11,
+      },
+      { combat: 1 },
+      activeWeather
+    );
+    const updated = evo.pirate;
     const ev: WorldEvent = {
       id: `ev_${nowMs.toString(36)}_trn_${Math.floor(rng() * 99999)}`,
       type: xpRes.leveledUp ? 'level_up' : 'dock',
@@ -1655,7 +1908,7 @@ export function runIslandMission(
       pirateId: updated.id,
       pirateName: updated.name,
       isPlayerRelated: true,
-      message: `${updated.name} entrena duro en ${island.name} (+${xpGain} XP)${xpRes.leveledUp ? ` ¡Alcanza el Nivel ${updated.level}!` : ''}.`,
+      message: `${updated.name} entrena duro en ${island.name} (+${xpGain} XP)${xpRes.leveledUp ? ` ¡Alcanza el Nivel ${updated.level}!` : ''}${evo.roleChanged ? ` · ¡Evoluciona a ${evo.nextRole}!` : ''}.`,
       bountyDelta: 0,
       day: world.day,
       timeLabel,
@@ -1672,15 +1925,20 @@ export function runIslandMission(
 
     if (!target.devilFruit && rng() < fruitChance) {
       const fruit = DEVIL_FRUITS[Math.floor(rng() * DEVIL_FRUITS.length)];
-      const xpRes = awardXpToPirate(target, 14 + island.dangerTier * 2);
-      const updated: Pirate = {
-        ...xpRes.pirate,
-        devilFruit: fruit,
-        berries: xpRes.pirate.berries + 3,
-        islandSpot: 'ruinas',
-        islandActivity: `Explorando ruinas de ${island.name}`,
-        cooldownSec: 12,
-      };
+      const xpRes = awardXpToPirate(target, 4);
+      const evo = applyRoleEvolution(
+        {
+          ...xpRes.pirate,
+          devilFruit: fruit,
+          berries: xpRes.pirate.berries + 3,
+          islandSpot: 'ruinas',
+          islandActivity: `Explorando ruinas de ${island.name}`,
+          cooldownSec: 12,
+        },
+        { explore: 1 },
+        activeWeather
+      );
+      const updated = evo.pirate;
       const ev: WorldEvent = {
         id: `ev_${nowMs.toString(36)}_df_${Math.floor(rng() * 99999)}`,
         type: 'devil_fruit',
@@ -1689,7 +1947,7 @@ export function runIslandMission(
         pirateId: updated.id,
         pirateName: updated.name,
         isPlayerRelated: true,
-        message: `¡Hallazgo histórico en ${island.name}! ${updated.name} descubre la ${fruit}.`,
+        message: `¡Hallazgo histórico en ${island.name}! ${updated.name} descubre la ${fruit}${evo.roleChanged ? ` y evoluciona a ${evo.nextRole}` : ''}.`,
         bountyDelta: 0,
         day: world.day,
         timeLabel,
@@ -1700,15 +1958,20 @@ export function runIslandMission(
     }
 
     const coins = 2 + Math.max(0, mods.treasureBonus) + Math.floor(rng() * (1 + island.dangerTier));
-    const xpGain = 7 + island.dangerTier * 2;
+    const xpGain = island.dangerTier >= 4 ? 2 : 1;
     const xpRes = awardXpToPirate(target, xpGain);
-    const updated: Pirate = {
-      ...xpRes.pirate,
-      berries: xpRes.pirate.berries + coins,
-      islandSpot: 'ruinas',
-      islandActivity: `Explorando las costas de ${island.name}`,
-      cooldownSec: 12,
-    };
+    const evo = applyRoleEvolution(
+      {
+        ...xpRes.pirate,
+        berries: xpRes.pirate.berries + coins,
+        islandSpot: 'ruinas',
+        islandActivity: `Explorando las costas de ${island.name}`,
+        cooldownSec: 12,
+      },
+      { explore: 1 },
+      activeWeather
+    );
+    const updated = evo.pirate;
     const ev: WorldEvent = {
       id: `ev_${nowMs.toString(36)}_exp_${Math.floor(rng() * 99999)}`,
       type: 'treasure',
@@ -1717,7 +1980,7 @@ export function runIslandMission(
       pirateId: updated.id,
       pirateName: updated.name,
       isPlayerRelated: true,
-      message: `${updated.name} explora ${island.name}, reúne ${coins} monedones y +${xpGain} XP${xpRes.leveledUp ? ` (¡Nivel ${updated.level}!)` : ''}.`,
+      message: `${updated.name} explora ${island.name}, reúne ${coins} monedones y +${xpGain} XP${xpRes.leveledUp ? ` (¡Nivel ${updated.level}!)` : ''}${evo.roleChanged ? ` · ¡Evoluciona a ${evo.nextRole}!` : ''}.`,
       bountyDelta: 0,
       day: world.day,
       timeLabel,
@@ -1740,24 +2003,32 @@ export function runIslandMission(
         rng,
         activeWeather
       );
-      const winXp = awardXpToPirate(winner, 14 + island.dangerTier * 3);
-      const loseXp = awardXpToPirate(loser, 5);
-      const updatedWinner: Pirate = {
-        ...winXp.pirate,
-        wins: winXp.pirate.wins + 1,
-        bounty: winXp.pirate.bounty + bountyGain,
-        berries: winXp.pirate.berries + 2 + island.dangerTier,
-        islandSpot: 'puerto',
-        islandActivity: `Victorioso en el puerto de ${island.name}`,
-        cooldownSec: 12,
-      };
-      const updatedLoser: Pirate = {
-        ...loseXp.pirate,
-        losses: loseXp.pirate.losses + 1,
-        islandSpot: 'puerto',
-        islandActivity: `Recuperándose en ${island.name}`,
-        cooldownSec: 14,
-      };
+      const winXp = awardXpToPirate(winner, 2 + Math.floor(island.dangerTier / 3));
+      const loseXp = awardXpToPirate(loser, 1);
+      const updatedWinner = applyRoleEvolution(
+        {
+          ...winXp.pirate,
+          wins: winXp.pirate.wins + 1,
+          bounty: winXp.pirate.bounty + bountyGain,
+          berries: winXp.pirate.berries + 2 + island.dangerTier,
+          islandSpot: 'puerto',
+          islandActivity: `Victorioso en el puerto de ${island.name}`,
+          cooldownSec: 12,
+        },
+        { combat: 1 },
+        activeWeather
+      ).pirate;
+      const updatedLoser = applyRoleEvolution(
+        {
+          ...loseXp.pirate,
+          losses: loseXp.pirate.losses + 1,
+          islandSpot: 'puerto',
+          islandActivity: `Recuperándose en ${island.name}`,
+          cooldownSec: 14,
+        },
+        { combat: 1 },
+        activeWeather
+      ).pirate;
       const ev: WorldEvent = {
         id: `ev_${nowMs.toString(36)}_pvp_${Math.floor(rng() * 99999)}`,
         type: 'duel',
@@ -1791,16 +2062,21 @@ export function runIslandMission(
     const won = power >= 9 + island.dangerTier * 2.5;
     if (won) {
       const bountyGain = Math.round((180_000 + island.dangerTier * 150_000) * mods.bountyMult);
-      const xpRes = awardXpToPirate(target, 12 + island.dangerTier * 2);
-      const updated: Pirate = {
-        ...xpRes.pirate,
-        wins: xpRes.pirate.wins + 1,
-        bounty: xpRes.pirate.bounty + bountyGain,
-        berries: xpRes.pirate.berries + 2,
-        islandSpot: 'puerto',
-        islandActivity: `Celebrando victoria en ${island.name}`,
-        cooldownSec: 12,
-      };
+      const xpRes = awardXpToPirate(target, 2 + Math.floor(island.dangerTier / 3));
+      const evo = applyRoleEvolution(
+        {
+          ...xpRes.pirate,
+          wins: xpRes.pirate.wins + 1,
+          bounty: xpRes.pirate.bounty + bountyGain,
+          berries: xpRes.pirate.berries + 2,
+          islandSpot: 'puerto',
+          islandActivity: `Celebrando victoria en ${island.name}`,
+          cooldownSec: 12,
+        },
+        { combat: 1 },
+        activeWeather
+      );
+      const updated = evo.pirate;
       const ev: WorldEvent = {
         id: `ev_${nowMs.toString(36)}_duel_${Math.floor(rng() * 99999)}`,
         type: 'duel',
@@ -1809,7 +2085,7 @@ export function runIslandMission(
         pirateId: updated.id,
         pirateName: updated.name,
         isPlayerRelated: true,
-        message: `${updated.name} derrota a un rival en el puerto de ${island.name} (+${formatShortBounty(bountyGain)}).`,
+        message: `${updated.name} derrota a un rival en el puerto de ${island.name} (+${formatShortBounty(bountyGain)})${evo.roleChanged ? ` · ¡Evoluciona a ${evo.nextRole}!` : ''}.`,
         bountyDelta: bountyGain,
         day: world.day,
         timeLabel,
@@ -1818,14 +2094,18 @@ export function runIslandMission(
       updateSinglePirate(updated, ev);
       return { world: nextWorld, event: createdEvent };
     } else {
-      const xpRes = awardXpToPirate(target, 5);
-      const updated: Pirate = {
-        ...xpRes.pirate,
-        losses: xpRes.pirate.losses + 1,
-        islandSpot: 'puerto',
-        islandActivity: `Reponiéndose en el puerto de ${island.name}`,
-        cooldownSec: 13,
-      };
+      const xpRes = awardXpToPirate(target, 1);
+      const updated = applyRoleEvolution(
+        {
+          ...xpRes.pirate,
+          losses: xpRes.pirate.losses + 1,
+          islandSpot: 'puerto',
+          islandActivity: `Reponiéndose en el puerto de ${island.name}`,
+          cooldownSec: 13,
+        },
+        { combat: 1 },
+        activeWeather
+      ).pirate;
       const ev: WorldEvent = {
         id: `ev_${nowMs.toString(36)}_duel_${Math.floor(rng() * 99999)}`,
         type: 'duel',
@@ -1834,7 +2114,7 @@ export function runIslandMission(
         pirateId: updated.id,
         pirateName: updated.name,
         isPlayerRelated: true,
-        message: `${updated.name} cae en un duelo en ${island.name}, pero gana +5 XP de experiencia.`,
+        message: `${updated.name} cae en un duelo en ${island.name}, pero gana +1 XP de experiencia.`,
         bountyDelta: 0,
         day: world.day,
         timeLabel,
@@ -1854,17 +2134,22 @@ export function runIslandMission(
     const bountyGain = Math.round(boss.bountyReward * mods.bountyMult);
     const xpRes = awardXpToPirate(target, boss.xpReward);
     const dropRes = rollBossDrop(target, getBossDropPool(island, boss), 0.78, rng);
-    const updated: Pirate = {
-      ...xpRes.pirate,
-      wins: xpRes.pirate.wins + 1,
-      bossesDefeated: (xpRes.pirate.bossesDefeated || 0) + 1,
-      bounty: xpRes.pirate.bounty + bountyGain,
-      berries: xpRes.pirate.berries + boss.berriesReward + dropRes.bonusCoins,
-      inventory: dropRes.nextInventory,
-      islandSpot: 'jefe',
-      islandActivity: `Derrotó a ${boss.name} en ${island.name}`,
-      cooldownSec: 14,
-    };
+    const evo = applyRoleEvolution(
+      {
+        ...xpRes.pirate,
+        wins: xpRes.pirate.wins + 1,
+        bossesDefeated: (xpRes.pirate.bossesDefeated || 0) + 1,
+        bounty: xpRes.pirate.bounty + bountyGain,
+        berries: xpRes.pirate.berries + boss.berriesReward + dropRes.bonusCoins,
+        inventory: dropRes.nextInventory,
+        islandSpot: 'jefe',
+        islandActivity: `Derrotó a ${boss.name} en ${island.name}`,
+        cooldownSec: 14,
+      },
+      { combat: 2 },
+      activeWeather
+    );
+    const updated = evo.pirate;
     const dropText = dropRes.droppedItem
       ? dropRes.isNew
         ? ` ¡Botín del Jefe: ${dropRes.droppedItem.name}!`
@@ -1878,7 +2163,7 @@ export function runIslandMission(
       pirateId: updated.id,
       pirateName: updated.name,
       isPlayerRelated: true,
-      message: `¡Jefe derrotado en ${island.name}! ${updated.name} vence a ${boss.name} (${boss.title}) y suma +${formatShortBounty(bountyGain)} de recompensa.${dropText}`,
+      message: `¡Jefe derrotado en ${island.name}! ${updated.name} vence a ${boss.name} (${boss.title}) y suma +${formatShortBounty(bountyGain)} de recompensa.${dropText}${evo.roleChanged ? ` ¡Evoluciona a ${evo.nextRole}!` : ''}`,
       bountyDelta: bountyGain,
       day: world.day,
       timeLabel,
@@ -1888,15 +2173,19 @@ export function runIslandMission(
     return { world: nextWorld, event: createdEvent };
   }
 
-  // Boss defeat: still grants consolation XP
-  const xpRes = awardXpToPirate(target, 6);
-  const updated: Pirate = {
-    ...xpRes.pirate,
-    losses: xpRes.pirate.losses + 1,
-    islandSpot: 'jefe',
-    islandActivity: `Repuesto tras desafiar a ${boss.name}`,
-    cooldownSec: 15,
-  };
+  // Boss defeat: still grants minimal consolation XP
+  const xpRes = awardXpToPirate(target, 2);
+  const updated = applyRoleEvolution(
+    {
+      ...xpRes.pirate,
+      losses: xpRes.pirate.losses + 1,
+      islandSpot: 'jefe',
+      islandActivity: `Repuesto tras desafiar a ${boss.name}`,
+      cooldownSec: 15,
+    },
+    { combat: 1 },
+    activeWeather
+  ).pirate;
   const ev: WorldEvent = {
     id: `ev_${nowMs.toString(36)}_bossl_${Math.floor(rng() * 99999)}`,
     type: 'boss',
@@ -1905,7 +2194,7 @@ export function runIslandMission(
     pirateId: updated.id,
     pirateName: updated.name,
     isPlayerRelated: true,
-    message: `${updated.name} enfrenta al Jefe ${boss.name} en ${island.name} y cae en combate (+6 XP para seguir entrenando).`,
+    message: `${updated.name} enfrenta al Jefe ${boss.name} en ${island.name} y cae en combate (+2 XP para seguir entrenando).`,
     bountyDelta: 0,
     day: world.day,
     timeLabel,
@@ -1939,7 +2228,7 @@ export function runNpcQuest(
   const mods = computeTraitModifiers(target);
   const timeLabel = formatClock(world.minuteOfDay);
 
-  const xpGain = alreadyDone ? Math.max(4, Math.round(quest.xpReward * 0.35)) : quest.xpReward;
+  const xpGain = alreadyDone ? 1 : quest.xpReward;
   const berriesGain = alreadyDone ? 1 : quest.berriesReward;
   const bountyGain =
     !alreadyDone && quest.bountyReward > 0
@@ -1947,15 +2236,23 @@ export function runNpcQuest(
       : 0;
 
   const xpRes = awardXpToPirate(target, xpGain);
-  const updated: Pirate = {
-    ...xpRes.pirate,
-    bounty: xpRes.pirate.bounty + bountyGain,
-    berries: xpRes.pirate.berries + berriesGain,
-    islandSpot: quest.zone,
-    islandActivity: `Ayudando a ${quest.npcName} en ${island.name}`,
-    cooldownSec: 12,
-    completedQuestIds: alreadyDone ? prevCompleted : [...prevCompleted, quest.id],
-  };
+  const evo = applyRoleEvolution(
+    {
+      ...xpRes.pirate,
+      bounty: xpRes.pirate.bounty + bountyGain,
+      berries: xpRes.pirate.berries + berriesGain,
+      islandSpot: quest.zone,
+      islandActivity: `Ayudando a ${quest.npcName} en ${island.name}`,
+      cooldownSec: 12,
+      completedQuestIds: alreadyDone ? prevCompleted : [...prevCompleted, quest.id],
+    },
+    {
+      quest: 1,
+      explore: quest.zone === 'ruinas' ? 1 : 0,
+      voyage: quest.zone === 'puerto' ? 1 : 0,
+    }
+  );
+  const updated = evo.pirate;
 
   const bountyText = bountyGain > 0 ? ` y +${formatShortBounty(bountyGain)}` : '';
   const ev: WorldEvent = {
@@ -1966,7 +2263,7 @@ export function runNpcQuest(
     pirateId: updated.id,
     pirateName: updated.name,
     isPlayerRelated: updated.isPlayerOwned,
-    message: `${updated.name} ${alreadyDone ? 'repasa el encargo' : 'completa la misión'} «${quest.title}» para ${quest.npcName} en ${island.name} (+${xpGain} XP, +${berriesGain} monedones${bountyText})${xpRes.leveledUp ? ` ¡Nivel ${updated.level}!` : ''}.`,
+    message: `${updated.name} ${alreadyDone ? 'repasa el encargo' : 'completa la misión'} «${quest.title}» para ${quest.npcName} en ${island.name} (+${xpGain} XP, +${berriesGain} monedones${bountyText})${xpRes.leveledUp ? ` ¡Nivel ${updated.level}!` : ''}${evo.roleChanged ? ` · ¡Evoluciona a ${evo.nextRole}!` : ''}.`,
     bountyDelta: bountyGain,
     day: world.day,
     timeLabel,
@@ -2015,24 +2312,29 @@ export function challengeMiniBoss(
     const bountyGain = Math.round(
       (alreadyDefeated ? miniBoss.bountyReward * 0.25 : miniBoss.bountyReward) * mods.bountyMult
     );
-    const xpGain = alreadyDefeated ? Math.round(miniBoss.xpReward * 0.5) : miniBoss.xpReward;
+    const xpGain = alreadyDefeated ? 2 : miniBoss.xpReward;
     const xpRes = awardXpToPirate(target, xpGain);
     const dropPool = miniBoss.dropPool && miniBoss.dropPool.length > 0
       ? miniBoss.dropPool
       : getBossDropPool(island);
     const dropRes = rollBossDrop(target, dropPool, 0.48, rng);
 
-    const updated: Pirate = {
-      ...xpRes.pirate,
-      wins: xpRes.pirate.wins + 1,
-      bounty: xpRes.pirate.bounty + bountyGain,
-      berries: xpRes.pirate.berries + miniBoss.berriesReward + dropRes.bonusCoins,
-      inventory: dropRes.nextInventory,
-      islandSpot: miniBoss.zone,
-      islandActivity: `Derrotó al subjefe ${miniBoss.name} en ${island.name}`,
-      cooldownSec: 13,
-      defeatedMiniBossIds: alreadyDefeated ? prevDefeated : [...prevDefeated, miniBoss.id],
-    };
+    const evo = applyRoleEvolution(
+      {
+        ...xpRes.pirate,
+        wins: xpRes.pirate.wins + 1,
+        bounty: xpRes.pirate.bounty + bountyGain,
+        berries: xpRes.pirate.berries + miniBoss.berriesReward + dropRes.bonusCoins,
+        inventory: dropRes.nextInventory,
+        islandSpot: miniBoss.zone,
+        islandActivity: `Derrotó al subjefe ${miniBoss.name} en ${island.name}`,
+        cooldownSec: 13,
+        defeatedMiniBossIds: alreadyDefeated ? prevDefeated : [...prevDefeated, miniBoss.id],
+      },
+      { combat: 1 },
+      activeWeather
+    );
+    const updated = evo.pirate;
 
     const dropText = dropRes.droppedItem
       ? dropRes.isNew
@@ -2047,7 +2349,7 @@ export function challengeMiniBoss(
       pirateId: updated.id,
       pirateName: updated.name,
       isPlayerRelated: updated.isPlayerOwned,
-      message: `¡Subjefe derrotado en ${island.name}! ${updated.name} vence a ${miniBoss.name} (${miniBoss.title}) y suma +${formatShortBounty(bountyGain)}.${dropText}`,
+      message: `¡Subjefe derrotado en ${island.name}! ${updated.name} vence a ${miniBoss.name} (${miniBoss.title}) y suma +${formatShortBounty(bountyGain)}.${dropText}${evo.roleChanged ? ` ¡Evoluciona a ${evo.nextRole}!` : ''}`,
       bountyDelta: bountyGain,
       day: world.day,
       timeLabel,
@@ -2065,14 +2367,18 @@ export function challengeMiniBoss(
     };
   }
 
-  const xpRes = awardXpToPirate(target, 6);
-  const updated: Pirate = {
-    ...xpRes.pirate,
-    losses: xpRes.pirate.losses + 1,
-    islandSpot: miniBoss.zone,
-    islandActivity: `Repuesto tras desafiar a ${miniBoss.name}`,
-    cooldownSec: 14,
-  };
+  const xpRes = awardXpToPirate(target, 1);
+  const updated = applyRoleEvolution(
+    {
+      ...xpRes.pirate,
+      losses: xpRes.pirate.losses + 1,
+      islandSpot: miniBoss.zone,
+      islandActivity: `Repuesto tras desafiar a ${miniBoss.name}`,
+      cooldownSec: 14,
+    },
+    { combat: 1 },
+    activeWeather
+  ).pirate;
   const ev: WorldEvent = {
     id: `ev_${nowMs.toString(36)}_mbl_${Math.floor(rng() * 99999)}`,
     type: 'boss',
@@ -2081,7 +2387,7 @@ export function challengeMiniBoss(
     pirateId: updated.id,
     pirateName: updated.name,
     isPlayerRelated: updated.isPlayerOwned,
-    message: `${updated.name} enfrenta al subjefe ${miniBoss.name} en ${island.name} y cae en combate (+6 XP para seguir entrenando).`,
+    message: `${updated.name} enfrenta al subjefe ${miniBoss.name} en ${island.name} y cae en combate (+1 XP para seguir entrenando).`,
     bountyDelta: 0,
     day: world.day,
     timeLabel,
@@ -2189,6 +2495,9 @@ export function stepSimulation(
         p.islandSpot = 'puerto';
         p.islandActivity = `Recién llegado al puerto de ${arrivedIsland.name}`;
         p.cooldownSec = 10 + rng() * 6;
+        const arrivedEvo = applyRoleEvolution(p, { voyage: 2 });
+        p.roleAffinities = arrivedEvo.pirate.roleAffinities;
+        p.role = arrivedEvo.pirate.role;
 
         const ev: WorldEvent = {
           id: `ev_${nowMs.toString(36)}_dock_${i}_${Math.floor(rng() * 99999)}`,
@@ -2198,7 +2507,7 @@ export function stepSimulation(
           pirateId: p.id,
           pirateName: p.name,
           isPlayerRelated: p.isPlayerOwned,
-          message: `${p.name} atraca en ${arrivedIsland.name} (${arrivedIsland.sea}).`,
+          message: `${p.name} atraca en ${arrivedIsland.name} (${arrivedIsland.sea})${arrivedEvo.roleChanged ? ` · ¡Evoluciona a ${arrivedEvo.nextRole}!` : ''}.`,
           bountyDelta: 0,
           day,
           timeLabel,
@@ -2289,17 +2598,17 @@ export function stepSimulation(
 export function getSeaBadgeColor(sea: SeaName): string {
   switch (sea) {
     case 'Mar del Este':
-      return '#38bdf8';
+      return '#0284c7';
     case 'Mar del Norte':
-      return '#a78bfa';
+      return '#6d28d9';
     case 'Mar del Sur':
-      return '#34d399';
+      return '#047857';
     case 'Mar del Oeste':
-      return '#fb923c';
+      return '#c2410c';
     case 'Paraíso':
-      return '#facc15';
+      return '#b45309';
     case 'Nuevo Mundo':
-      return '#f43f5e';
+      return '#be123c';
   }
 }
 
@@ -2345,7 +2654,10 @@ export function compactPirateForStorage(p: Pirate): Record<string, unknown> {
   };
   if (p.ownerId && p.ownerId !== 'local-player') out.ownerId = p.ownerId;
   if (p.faction !== 'piratas') out.faction = p.faction;
-  if (p.role !== 'Capitán') out.role = p.role;
+  if (p.role !== 'Grumete') out.role = p.role;
+  if (p.roleAffinities && Object.keys(p.roleAffinities).length > 0) {
+    out.roleAffinities = p.roleAffinities;
+  }
   if (p.race && p.race !== 'humano') out.race = p.race;
   if (p.wins > 0) out.wins = p.wins;
   if (p.losses > 0) out.losses = p.losses;
@@ -2414,14 +2726,14 @@ export function hydratePirateFromStorage(
       MINI_ISLANDS.find((i) => i.id === rawSailingDest)
     : undefined;
 
-  return {
+  const hydrated: Pirate = {
     id: p.id,
     ownerId: uid ?? p.ownerId ?? 'local-player',
     isPlayerOwned: true,
     name,
     epithet: p.epithet || 'Corsario Libre',
     faction: p.faction || 'piratas',
-    role: p.role || 'Capitán',
+    role: p.role || 'Grumete',
     race: p.race || 'humano',
     originSea: p.originSea || 'Mar del Este',
     dream: p.dream || 'Explorar cada rincón de Vivid Ocean.',
@@ -2471,5 +2783,8 @@ export function hydratePirateFromStorage(
     completedQuestIds: Array.isArray(p.completedQuestIds) ? p.completedQuestIds : [],
     defeatedMiniBossIds: Array.isArray(p.defeatedMiniBossIds) ? p.defeatedMiniBossIds : [],
     bubbleCoated: Boolean(p.bubbleCoated),
+    roleAffinities:
+      p.roleAffinities && typeof p.roleAffinities === 'object' ? p.roleAffinities : undefined,
   };
+  return applyRoleEvolution(hydrated).pirate;
 }

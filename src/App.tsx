@@ -31,14 +31,19 @@ import {
   updatePirateCrew,
   updatePirateProfile,
 } from './game/sim';
+import {
+  GLOBE_ENTRY_DIST_FROM_MAP,
+  MAP_ENTRY_ZOOM_FROM_GLOBE,
+  MAP_ENTRY_ZOOM_FROM_ISLAND,
+} from './game/zoomContinuum';
 import type {
   CreatePirateInput,
   EquipmentSlot,
   GameState,
+  Island,
   IslandMissionId,
   IslandZoneId,
   Pirate,
-  PirateRole,
   RedDotFilterId,
   WorldState,
 } from './game/types';
@@ -131,6 +136,7 @@ export default function App() {
   const [cameraTarget, setCameraTarget] = useState<CameraTargetRequest | null>(null);
   const [mapFocusTarget, setMapFocusTarget] = useState<WorldMapFocusRequest | null>(null);
   const [mapSelectedIslandId, setMapSelectedIslandId] = useState<string | null>(null);
+  const [inspectedIslandId, setInspectedIslandId] = useState<string | null>(null);
   const [selectedRoamingNpcId, setSelectedRoamingNpcId] = useState<string | null>(null);
   const [redDotFilters, setRedDotFilters] = useState<RedDotFilterId[]>([]);
   const [voyageNotice, setVoyageNotice] = useState<string | null>(null);
@@ -182,6 +188,7 @@ export default function App() {
 
   const focusPirate = useCallback(
     (pirate: Pirate) => {
+      setInspectedIslandId(null);
       const [pLat, pLon] = getPirateLatLon(pirate, allMapIslands);
       const isl = allMapIslands.find((i) => i.id === pirate.islandId);
       const dist = pirate.sailingToIslandId
@@ -189,6 +196,7 @@ export default function App() {
         : Math.min(7.5, Math.max(6.85, 6.8 + (isl?.scale ?? 1.0) * 0.45));
       flyToLatLon(pLat, pLon, dist);
       cameraNonceRef.current += 1;
+      setMapSelectedIslandId(pirate.islandId);
       setMapFocusTarget({
         lat: pLat,
         lon: pLon,
@@ -482,6 +490,7 @@ export default function App() {
 
     // Stay inside the new character's solo screen immediately after creating!
     setActivePirateId(result.pirate.id);
+    setInspectedIslandId(null);
     setViewMode('character');
     setMapView('island');
     setGameState('playing');
@@ -509,9 +518,10 @@ export default function App() {
 
   const handleSelectCharacter = (pirate: Pirate) => {
     soundEngine.playClick();
+    setInspectedIslandId(null);
     setActivePirateId(pirate.id);
     setViewMode('character');
-    setMapView(pirate.sailingToIslandId ? 'globe' : 'island');
+    setMapView(pirate.sailingToIslandId ? 'map' : 'island');
     focusPirate(pirate);
   };
 
@@ -595,6 +605,8 @@ export default function App() {
 
   const handleStartVoyage = (pirateId: string, destIslandId: string) => {
     let voyageStarted = false;
+    let shipLat = 0;
+    let shipLon = 0;
     setWorld((prev) => {
       const res = startPirateVoyage(prev, pirateId, destIslandId, Date.now());
       if (!res.started && res.reason) {
@@ -602,15 +614,30 @@ export default function App() {
       } else if (res.started) {
         voyageStarted = true;
         setVoyageNotice(null);
+        const updatedPirate = res.world.pirates.find((p) => p.id === pirateId);
+        if (updatedPirate) {
+          const [pLat, pLon] = getPirateLatLon(updatedPirate, allMapIslands);
+          shipLat = pLat;
+          shipLon = pLon;
+        }
       }
       return res.world;
     });
     if (voyageStarted) {
       soundEngine.playStartFanfare();
+      setInspectedIslandId(null);
+      setMapSelectedIslandId(destIslandId);
       if (mapView === 'island') {
-        setMapView('globe');
+        cameraNonceRef.current += 1;
+        setMapFocusTarget({
+          lat: shipLat,
+          lon: shipLon,
+          zoom: 3.2,
+          nonce: cameraNonceRef.current,
+        });
+        setMapView('map');
       }
-      flyToLatLon(0, 0, 12.2);
+      flyToLatLon(shipLat, shipLon, 9.8);
     }
   };
 
@@ -619,7 +646,25 @@ export default function App() {
     setMapFocusTarget({
       lat,
       lon,
-      zoom: 4.5,
+      zoom: MAP_ENTRY_ZOOM_FROM_GLOBE,
+      nonce: cameraNonceRef.current,
+    });
+    setMapView('map');
+  }, []);
+
+  const handleZoomInToIsland = useCallback((island: Island) => {
+    setInspectedIslandId(island.id);
+    setMapSelectedIslandId(island.id);
+    setMapView('island');
+  }, []);
+
+  const handleZoomOutToMapFromIsland = useCallback((island: Island) => {
+    cameraNonceRef.current += 1;
+    setMapSelectedIslandId(island.id);
+    setMapFocusTarget({
+      lat: island.lat,
+      lon: island.lon,
+      zoom: MAP_ENTRY_ZOOM_FROM_ISLAND,
       nonce: cameraNonceRef.current,
     });
     setMapView('map');
@@ -627,7 +672,7 @@ export default function App() {
 
   const handleZoomOutToGlobe = useCallback(
     (lat: number, lon: number) => {
-      flyToLatLon(lat, lon, 8.6);
+      flyToLatLon(lat, lon, GLOBE_ENTRY_DIST_FROM_MAP);
       setMapView('globe');
     },
     [flyToLatLon]
@@ -635,7 +680,7 @@ export default function App() {
 
   const handleUpdateCrew = async (
     pirateId: string,
-    payload: { crewName: string; role: PirateRole; flagColor: string }
+    payload: { crewName: string; flagColor: string }
   ) => {
     soundEngine.playClick();
     let updatedPirate: Pirate | null = null;
@@ -785,9 +830,18 @@ export default function App() {
         }}
         onSelectRoamingNpc={(npcId) => {
           soundEngine.playClick();
+          setMapSelectedIslandId(null);
           setSelectedRoamingNpcId(npcId);
         }}
         onZoomTransitionToMap={viewMode === 'character' ? handleZoomToMap : undefined}
+        onFocusMyShip={
+          viewMode === 'character' && activePirate
+            ? () => {
+                soundEngine.playClick();
+                focusPirate(activePirate);
+              }
+            : undefined
+        }
       />
 
       {/* Title Screen */}
@@ -845,6 +899,7 @@ export default function App() {
           authBusy={authBusy}
           authNotice={authNotice}
           mapView={mapView}
+          inspectedIslandId={inspectedIslandId}
           mapFocusTarget={mapFocusTarget}
           mapSelectedIslandId={mapSelectedIslandId}
           selectedRoamingNpcId={selectedRoamingNpcId}
@@ -854,7 +909,10 @@ export default function App() {
           onChangeCharacterSideOpen={setCharacterSideOpen}
           onChangeRedDotFilters={setRedDotFilters}
           onSelectRoamingNpc={(npcId) => {
-            if (npcId) soundEngine.playClick();
+            if (npcId) {
+              soundEngine.playClick();
+              setMapSelectedIslandId(null);
+            }
             setSelectedRoamingNpcId(npcId);
           }}
           onFocusLatLon={handleFocusLatLon}
@@ -870,11 +928,14 @@ export default function App() {
             setMapSelectedIslandId(id);
             focusIslandById(id);
           }}
+          onZoomInToIsland={handleZoomInToIsland}
+          onZoomOutToMap={handleZoomOutToMapFromIsland}
           onZoomOutToGlobe={handleZoomOutToGlobe}
           onCoatShipBubble={handleCoatShipBubble}
           onClearVoyageNotice={() => setVoyageNotice(null)}
           onBackToMenu={() => {
             soundEngine.playClick();
+            setInspectedIslandId(null);
             setViewMode('menu');
             setActivePirateId(null);
             flyToLatLon(14, 32, 14.8);
@@ -885,11 +946,12 @@ export default function App() {
           }}
           onFocusFullGlobe={() => {
             soundEngine.playClick();
+            setMapView('globe');
             flyToLatLon(14, 32, 15.2);
           }}
           onFocusWorldCenter={() => {
             soundEngine.playClick();
-            flyToLatLon(0, 0, 11.2);
+            handleFocusLatLon(0, 0, 1.4, 11.2);
           }}
           onFocusIsland={(id) => {
             soundEngine.playClick();

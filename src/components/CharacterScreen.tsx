@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import type { User } from 'firebase/auth';
 import {
-  Anchor,
   ArrowLeft,
   Backpack,
   Check,
@@ -14,7 +13,6 @@ import {
   Edit3,
   Filter,
   Flame,
-  Globe,
   Hand,
   LocateFixed,
   Map as MapIcon,
@@ -55,6 +53,7 @@ import {
   getIslandWeather,
   getNavigationPathCoords,
   getRankInfo,
+  getRoleEvolutionInfo,
   getSeaBadgeColor,
   getWeekAndDay,
   xpForNextLevel,
@@ -79,7 +78,6 @@ import {
   HAT_OPTIONS,
   OUTFIT_COLORS,
   OUTFIT_STYLES,
-  PIRATE_ROLES,
   getBossDropPool,
   getBossForIsland,
   getEquipmentItem,
@@ -104,7 +102,6 @@ import type {
   IslandMissionId,
   IslandZoneId,
   Pirate,
-  PirateRole,
   RedDotFilterId,
   SeaName,
   WeatherType,
@@ -138,6 +135,7 @@ interface CharacterScreenProps {
   authBusy: boolean;
   authNotice: string | null;
   mapView: 'island' | 'globe' | 'map';
+  inspectedIslandId?: string | null;
   mapFocusTarget?: WorldMapFocusRequest | null;
   mapSelectedIslandId?: string | null;
   selectedRoamingNpcId?: string | null;
@@ -150,6 +148,8 @@ interface CharacterScreenProps {
   onFocusLatLon?: (lat: number, lon: number, zoom?: number, globeDist?: number) => void;
   onChangeMapView: (mode: 'island' | 'globe' | 'map') => void;
   onSelectMapIsland?: (islandId: string) => void;
+  onZoomInToIsland?: (island: Island) => void;
+  onZoomOutToMap?: (island: Island) => void;
   onZoomOutToGlobe?: (lat: number, lon: number) => void;
   onCoatShipBubble: (pirateId: string) => void;
   onClearVoyageNotice?: () => void;
@@ -166,7 +166,7 @@ interface CharacterScreenProps {
   onStartVoyage: (pirateId: string, destIslandId: string) => void;
   onUpdateCrew: (
     pirateId: string,
-    payload: { crewName: string; role: PirateRole; flagColor: string }
+    payload: { crewName: string; flagColor: string }
   ) => void;
   onUpdateBuild: (pirateId: string, patch: PirateBuildPatch) => void;
   onEquipItem: (pirateId: string, itemId: string) => void;
@@ -192,23 +192,23 @@ const RARITY_STYLES: Record<
   { badge: string; border: string; label: string }
 > = {
   comun: {
-    badge: 'bg-slate-700 text-slate-200',
-    border: 'border-slate-700',
+    badge: 'bg-slate-200/90 text-slate-800 border border-slate-300',
+    border: 'border-slate-300',
     label: 'Común',
   },
   raro: {
-    badge: 'bg-sky-500/20 text-sky-300 border border-sky-400/40',
-    border: 'border-sky-500/40',
+    badge: 'bg-sky-500/15 text-sky-800 border border-sky-400/50',
+    border: 'border-sky-400/60',
     label: 'Raro',
   },
   epico: {
-    badge: 'bg-purple-500/20 text-purple-300 border border-purple-400/40',
-    border: 'border-purple-500/45',
+    badge: 'bg-purple-500/15 text-purple-800 border border-purple-400/50',
+    border: 'border-purple-400/60',
     label: 'Épico',
   },
   legendario: {
-    badge: 'bg-amber-500/20 text-amber-300 border border-amber-400/50',
-    border: 'border-amber-400/55',
+    badge: 'bg-amber-500/20 text-amber-800 border border-amber-500/55',
+    border: 'border-amber-500/65',
     label: 'Legendario',
   },
 };
@@ -222,13 +222,13 @@ const SLOT_LABELS: Record<EquipmentSlot, string> = {
 function renderFactionMiniIcon(faction: Faction) {
   switch (faction) {
     case 'marines':
-      return <Shield className="h-3.5 w-3.5 text-sky-400 shrink-0" />;
+      return <Shield className="h-3.5 w-3.5 text-sky-600 shrink-0" />;
     case 'revolucionarios':
-      return <Flame className="h-3.5 w-3.5 text-teal-400 shrink-0" />;
+      return <Flame className="h-3.5 w-3.5 text-teal-600 shrink-0" />;
     case 'aventureros':
-      return <Compass className="h-3.5 w-3.5 text-purple-400 shrink-0" />;
+      return <Compass className="h-3.5 w-3.5 text-purple-600 shrink-0" />;
     default:
-      return <Skull className="h-3.5 w-3.5 text-rose-400 shrink-0" />;
+      return <Skull className="h-3.5 w-3.5 text-rose-600 shrink-0" />;
   }
 }
 
@@ -273,6 +273,7 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
   authBusy,
   authNotice,
   mapView,
+  inspectedIslandId = null,
   mapFocusTarget,
   mapSelectedIslandId,
   selectedRoamingNpcId = null,
@@ -285,6 +286,8 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
   onFocusLatLon,
   onChangeMapView,
   onSelectMapIsland,
+  onZoomInToIsland,
+  onZoomOutToMap,
   onZoomOutToGlobe,
   onCoatShipBubble,
   onClearVoyageNotice,
@@ -318,7 +321,6 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
   const [crewInput, setCrewInput] = useState(
     pirate.crewName === 'Sin tripulación' ? '' : pirate.crewName
   );
-  const [roleInput, setRoleInput] = useState<PirateRole>(pirate.role);
   const [colorInput, setColorInput] = useState(pirate.flagColor);
   const [selectedSeaFilter, setSelectedSeaFilter] = useState<SeaName>(
     allIslands.find((i) => i.id === pirate.islandId)?.sea ?? 'Mar del Este'
@@ -326,10 +328,9 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
 
   useEffect(() => {
     setCrewInput(pirate.crewName === 'Sin tripulación' ? '' : pirate.crewName);
-    setRoleInput(pirate.role);
     setColorInput(pirate.flagColor);
     setEditingCrew(false);
-  }, [pirate.id, pirate.crewName, pirate.role, pirate.flagColor]);
+  }, [pirate.id, pirate.crewName, pirate.flagColor]);
 
   const currIsland = allIslands.find((i) => i.id === pirate.islandId) ?? allIslands[0];
   const destIsland = pirate.sailingToIslandId
@@ -368,6 +369,10 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
     [weather, pirate]
   );
   const stats = computePirateStats(pirate, weather);
+  const roleEvolution = useMemo(
+    () => getRoleEvolutionInfo(pirate, weather),
+    [pirate, weather]
+  );
   const equippedItems = useMemo(() => getEquippedItems(pirate.equipped), [pirate.equipped]);
   const inventoryItems = useMemo(
     () =>
@@ -407,9 +412,17 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
   const levelsMissing = Math.max(0, targetLevelGate - level);
   const gatePct = Math.min(100, Math.round((level / targetLevelGate) * 100));
 
+  const stageIsland = useMemo(
+    () =>
+      (inspectedIslandId && allIslands.find((i) => i.id === inspectedIslandId)) ||
+      currIsland,
+    [allIslands, currIsland, inspectedIslandId]
+  );
+  const isPlayerDockedHere = !pirate.sailingToIslandId && stageIsland.id === currIsland.id;
+
   const showFlatMap = mapView === 'map';
-  const showGlobeViewport = !showFlatMap && (Boolean(pirate.sailingToIslandId) || mapView === 'globe');
-  const showIslandViewport = !showFlatMap && !showGlobeViewport;
+  const showGlobeViewport = mapView === 'globe';
+  const showIslandViewport = mapView === 'island';
   const hasEquippedWeapon = Boolean(pirate.equipped?.arma);
 
   useEffect(() => {
@@ -458,9 +471,14 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
         setActiveTab('mapa');
         onChangeCharacterSideOpen(true);
         if (mapView === 'island') {
-          onChangeMapView('map');
+          if (onZoomOutToMap) {
+            onZoomOutToMap(stageIsland);
+          } else {
+            onChangeMapView('map');
+          }
+        } else {
+          onFocusMyShip();
         }
-        onFocusMyShip();
       }
       return;
     }
@@ -472,16 +490,12 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
 
     setActiveTab(tab);
     onChangeCharacterSideOpen(true);
-    if (mapView !== 'island' && !pirate.sailingToIslandId) {
-      onChangeMapView('island');
-    }
   };
 
   const handleSaveCrew = (e: React.FormEvent) => {
     e.preventDefault();
     onUpdateCrew(pirate.id, {
       crewName: crewInput.trim() || 'Sin tripulación',
-      role: roleInput,
       flagColor: colorInput,
     });
     setEditingCrew(false);
@@ -559,7 +573,7 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
       {/* Character Identity Header */}
       <div className="flex items-start justify-between gap-2.5">
         <div className="flex items-center gap-2.5 min-w-0">
-          <div className="flex h-[64px] w-[64px] shrink-0 items-center justify-center rounded-xl border border-slate-700/80 bg-[#081221] p-1">
+          <div className="flex h-[64px] w-[64px] shrink-0 items-center justify-center rounded-xl border border-sky-200 bg-white/90 p-1 shadow-sm">
             <PirateAvatarSvg
               name={pirate.name}
               flagColor={pirate.flagColor}
@@ -585,22 +599,22 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
 
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-1.5">
-              <h1 className="font-display truncate text-lg font-black tracking-wide text-white uppercase">
+              <h1 className="font-display truncate text-lg font-black tracking-wide text-slate-900 uppercase">
                 {pirate.name}
               </h1>
-              <span className="font-mono-num text-[11px] font-black text-[#f5b82e]">
+              <span className="font-mono-num text-[11px] font-black text-amber-700">
                 {formatBounty(pirate.bounty)}
               </span>
             </div>
 
-            <div className="mt-0.5 flex flex-wrap items-center gap-1 text-[11px] font-semibold text-slate-200">
+            <div className="mt-0.5 flex flex-wrap items-center gap-1 text-[11px] font-semibold text-slate-700">
               {renderFactionMiniIcon(pirate.faction)}
               <span>
                 {factionInfo.singular} · {raceInfo.label} · {rank.title}
               </span>
             </div>
 
-            <div className="mt-0.5 truncate text-[11px] text-slate-400">
+            <div className="mt-0.5 truncate text-[11px] text-slate-600">
               {hasCrew ? `${pirate.crewName} (${pirate.role})` : `En solitario · ${pirate.role}`}
             </div>
           </div>
@@ -612,7 +626,7 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
             onClick={() => onEditCharacter(pirate)}
             aria-label={`Editar aspecto y rasgos de ${pirate.name}`}
             title="Editar ficha completa"
-            className="flex items-center gap-1 rounded-lg border border-teal-400/40 bg-teal-950/50 px-2 py-1 text-[10px] font-bold text-teal-200 hover:bg-teal-900/60 cursor-pointer whitespace-nowrap"
+            className="flex items-center gap-1 rounded-lg border border-teal-500/40 bg-teal-50/90 px-2 py-1 text-[10px] font-bold text-teal-800 hover:bg-teal-100 cursor-pointer whitespace-nowrap"
           >
             <Edit3 className="h-3 w-3" />
             <span className="hidden sm:inline">Ficha</span>
@@ -622,7 +636,7 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
             onClick={() => onChangeCharacterSideOpen(false)}
             aria-label="Ocultar panel de personaje"
             title="Ocultar panel lateral"
-            className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-700/80 text-slate-300 hover:bg-slate-800 hover:text-white cursor-pointer"
+            className="flex h-7 w-7 items-center justify-center rounded-lg border border-sky-200 bg-white/80 text-slate-600 hover:bg-white hover:text-slate-950 cursor-pointer"
           >
             <X className="h-3.5 w-3.5" />
           </button>
@@ -630,12 +644,12 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
       </div>
 
       {/* Location Strip + Manual Mode Toggle */}
-      <div className="flex items-center justify-between gap-2 rounded-xl border border-[#1d3557] bg-[#11223b] px-3 py-2">
+      <div className="flex items-center justify-between gap-2 rounded-xl border border-sky-200/85 bg-sky-50/80 px-3 py-2">
         <div className="min-w-0 flex-1">
-          <div className="truncate text-xs font-bold text-white">
+          <div className="truncate text-xs font-bold text-slate-900">
             {pirate.islandActivity || `En la taberna de ${currIsland.name}`}
           </div>
-          <div className="truncate text-[10px] text-slate-400">
+          <div className="truncate text-[10px] text-slate-600">
             {currIsland.name} ({currIsland.sea} · {sizeTier}) · Día {daysHere}/{recommendedDays} ·{' '}
             {doneQuestsCount}/{npcQuests.length} encargos
           </div>
@@ -647,8 +661,8 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
           onClick={() => onToggleManualMode(pirate.id, !pirate.manualMode)}
           className={`flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-black transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
             pirate.manualMode
-              ? 'bg-amber-400 text-slate-950 shadow'
-              : 'border border-teal-400/40 bg-teal-400/15 text-teal-200 hover:bg-teal-400/25'
+              ? 'bg-[#f5b82e] text-slate-950 shadow-sm'
+              : 'border border-teal-500/40 bg-teal-500/15 text-teal-800 hover:bg-teal-500/25'
           }`}
         >
           {pirate.manualMode ? (
@@ -666,17 +680,17 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
       </div>
 
       {/* Section Title Strip */}
-      <div className="flex items-center justify-between border-b border-slate-800/80 pb-1.5">
-        <span className="text-[11px] font-black uppercase tracking-wider text-amber-300">
+      <div className="flex items-center justify-between border-b border-sky-200/80 pb-1.5">
+        <span className="text-[11px] font-black uppercase tracking-wider text-amber-800">
           {activeTab === 'estado' && 'Estado, Clima y Estadísticas'}
           {activeTab === 'inventario' && 'Inventario, Equipo y Rasgos'}
           {activeTab === 'build' && 'Build: Ropa, Cicatrices y Equipo'}
           {activeTab === 'misiones' && `Misiones y Rutas · ${currIsland.name}`}
           {activeTab === 'noticias' && 'Noticias y Bitácora'}
-          {activeTab === 'mapa' && 'Mapa Global 3D'}
+          {activeTab === 'mapa' && 'Mapa y Navegación'}
           {activeTab === 'mas' && 'Opciones del Personaje'}
         </span>
-        <span className="text-[10px] font-mono-num text-slate-400">
+        <span className="text-[10px] font-mono-num font-bold text-slate-600">
           {pirate.berries} monedones
         </span>
       </div>
@@ -684,27 +698,38 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
       {/* TAB: ESTADO */}
       {activeTab === 'estado' && (
         <div className="space-y-3">
-          <div className="rounded-xl border border-[#1d3557] bg-[#101f37] p-3 space-y-2.5">
+          <div className="rounded-xl border border-sky-200/85 bg-white/75 p-3 space-y-2.5">
             <div>
-              <div className="text-xs font-black uppercase tracking-wide text-white">
-                {rank.title} · {raceInfo.label}
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-xs font-black uppercase tracking-wide text-slate-900">
+                  {rank.title} · {raceInfo.label}
+                </div>
+                <span
+                  data-testid="estado-evolved-role"
+                  className="rounded-md border border-teal-500/40 bg-teal-50/90 px-2 py-0.5 text-[10px] font-black text-teal-800"
+                >
+                  Rol: {pirate.role}
+                </span>
               </div>
-              <div className="text-[11px] text-slate-300">{rank.nextHint}</div>
+              <div className="text-[11px] text-slate-700">{rank.nextHint}</div>
+              <div className="mt-0.5 text-[10px] font-medium text-teal-700 leading-snug">
+                {roleEvolution.reason}
+              </div>
             </div>
 
             {/* LEVEL + XP BAR */}
             <div>
               <div className="flex items-center gap-2.5">
-                <span className="font-display text-base font-black text-[#f5b82e] whitespace-nowrap">
+                <span className="font-display text-base font-black text-amber-700 whitespace-nowrap">
                   NIVEL {level}
                 </span>
-                <div className="h-2 flex-1 overflow-hidden rounded-full bg-slate-800">
+                <div className="h-2 flex-1 overflow-hidden rounded-full bg-sky-200/80">
                   <div
-                    className="h-full rounded-full bg-[#f5d061] transition-all duration-300"
+                    className="h-full rounded-full bg-[#f5b82e] transition-all duration-300"
                     style={{ width: `${xpPct}%` }}
                   />
                 </div>
-                <span className="font-mono-num text-[11px] font-bold text-slate-300 whitespace-nowrap">
+                <span className="font-mono-num text-[11px] font-bold text-slate-700 whitespace-nowrap">
                   {xp} / {xpNeeded}
                 </span>
               </div>
@@ -712,7 +737,7 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
 
             {/* Sea Crossing Gate Progress */}
             <div>
-              <div className="text-[11px] text-slate-200">
+              <div className="text-[11px] text-slate-700">
                 {currIsland.sea === 'Nuevo Mundo' ? (
                   <>Dominando el Nuevo Mundo · Nivel {level}</>
                 ) : (
@@ -720,15 +745,15 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                     {isGrandLine
                       ? 'Para cruzar al Nuevo Mundo: nivel 20 · '
                       : 'Para cruzar al Paraíso: nivel 10 · '}
-                    <span className="font-semibold text-teal-300">
+                    <span className="font-semibold text-teal-700">
                       {levelsMissing === 0 ? '¡Listo para zarpar!' : `le faltan ${levelsMissing}`}
                     </span>
                   </>
                 )}
               </div>
-              <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+              <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-sky-200/80">
                 <div
-                  className="h-full rounded-full bg-[#14b8a6] transition-all duration-300"
+                  className="h-full rounded-full bg-[#0d9488] transition-all duration-300"
                   style={{ width: `${currIsland.sea === 'Nuevo Mundo' ? 100 : gatePct}%` }}
                 />
               </div>
@@ -737,23 +762,23 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
             {/* Regional Weather & Devil Fruit Status */}
             <div
               data-testid="estado-weather-card"
-              className="rounded-lg border border-[#1d3557] bg-[#0b1629] p-2.5 space-y-1.5"
+              className="rounded-lg border border-sky-200/85 bg-sky-50/80 p-2.5 space-y-1.5"
             >
               <div className="flex items-center justify-between gap-2">
-                <span className="flex items-center gap-1.5 text-xs font-bold text-white">
+                <span className="flex items-center gap-1.5 text-xs font-bold text-slate-900">
                   {renderWeatherIcon(weather.type, weather.color)}
                   <span>Clima en {currIsland.name}: {weather.label}</span>
                 </span>
               </div>
-              <p className="text-[10px] leading-snug text-slate-400">{weather.description}</p>
+              <p className="text-[10px] leading-snug text-slate-600">{weather.description}</p>
 
               {weatherDebuff.active ? (
                 <div
                   data-testid="estado-weather-debuff"
                   className={`rounded-md px-2 py-1 text-[10px] font-bold ${
                     weatherDebuff.combatDelta < 0
-                      ? 'border border-rose-500/45 bg-rose-950/50 text-rose-200'
-                      : 'border border-emerald-500/45 bg-emerald-950/45 text-emerald-200'
+                      ? 'border border-rose-300 bg-rose-50/90 text-rose-800'
+                      : 'border border-emerald-300 bg-emerald-50/90 text-emerald-800'
                   }`}
                 >
                   <div>{weatherDebuff.label}</div>
@@ -777,7 +802,7 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                   </div>
                 </div>
               ) : pirate.devilFruit ? (
-                <div className="text-[10px] text-purple-300">
+                <div className="text-[10px] text-purple-700 font-medium">
                   Usuario de <strong>{pirate.devilFruit}</strong>: sin penalización en este clima (la lluvia/tormenta te debilitan).
                 </div>
               ) : null}
@@ -813,16 +838,16 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
               ].map((st) => (
                 <div key={st.label} className="space-y-0.5">
                   <div className="flex items-center justify-between text-[11px]">
-                    <span className="font-medium text-slate-200">{st.label}</span>
-                    <span className="font-mono-num font-bold text-white">
+                    <span className="font-semibold text-slate-700">{st.label}</span>
+                    <span className="font-mono-num font-bold text-slate-900">
                       {st.val}
                       {st.gear > 0 && (
-                        <span className="ml-1 text-[9px] text-amber-300">(+{st.gear})</span>
+                        <span className="ml-1 text-[9px] text-amber-700">(+{st.gear})</span>
                       )}
                       {st.wDelta !== 0 && (
                         <span
                           className={`ml-1 text-[9px] ${
-                            st.wDelta < 0 ? 'text-rose-400' : 'text-emerald-300'
+                            st.wDelta < 0 ? 'text-rose-700' : 'text-emerald-700'
                           }`}
                         >
                           ({st.wDelta > 0 ? '+' : ''}
@@ -831,9 +856,9 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                       )}
                     </span>
                   </div>
-                  <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+                  <div className="h-1.5 w-full overflow-hidden rounded-full bg-sky-200/80">
                     <div
-                      className="h-full rounded-full bg-[#2dd4bf]"
+                      className="h-full rounded-full bg-[#0d9488]"
                       style={{ width: `${Math.min(100, Math.round((st.val / statMax) * 100))}%` }}
                     />
                   </div>
@@ -842,23 +867,23 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
             </div>
 
             {/* Active Equipment Summary */}
-            <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-slate-800/80 text-[10px]">
-              <span className="text-slate-400 truncate">
+            <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-sky-200/80 text-[10px]">
+              <span className="text-slate-600 truncate">
                 Equipo: {equippedItems.length > 0 ? equippedItems.map((i) => i.name).join(', ') : 'Sin equipo'}
               </span>
               <button
                 type="button"
                 onClick={() => setActiveTab('inventario')}
-                className="shrink-0 font-bold text-amber-300 hover:underline cursor-pointer"
+                className="shrink-0 font-bold text-amber-800 hover:underline cursor-pointer"
               >
                 Abrir inventario
               </button>
             </div>
 
             {/* Quick Mission Shortcut */}
-            <div className="flex items-center justify-between gap-2 pt-1 border-t border-slate-800/80">
-              <span className="text-[11px] text-slate-400 truncate">
-                Jefe local: <strong className="text-rose-300">{boss.name}</strong>
+            <div className="flex items-center justify-between gap-2 pt-1 border-t border-sky-200/80">
+              <span className="text-[11px] text-slate-600 truncate">
+                Jefe local: <strong className="text-rose-700">{boss.name}</strong>
               </span>
               <button
                 type="button"
@@ -876,29 +901,29 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
       {activeTab === 'inventario' && (
         <div className="space-y-3">
           <div className="grid grid-cols-3 gap-2 text-center">
-            <div className="rounded-xl border border-[#1d3557] bg-[#101f37] p-2">
-              <div className="text-[10px] uppercase text-slate-400">Monedones</div>
-              <div className="mt-0.5 font-mono-num text-sm font-black text-emerald-300">
+            <div className="rounded-xl border border-sky-200/85 bg-white/75 p-2">
+              <div className="text-[10px] uppercase font-semibold text-slate-500">Monedones</div>
+              <div className="mt-0.5 font-mono-num text-sm font-black text-emerald-700">
                 {pirate.berries}
               </div>
             </div>
-            <div className="rounded-xl border border-[#1d3557] bg-[#101f37] p-2">
-              <div className="text-[10px] uppercase text-slate-400">Jefes</div>
-              <div className="mt-0.5 font-mono-num text-sm font-black text-rose-300">
+            <div className="rounded-xl border border-sky-200/85 bg-white/75 p-2">
+              <div className="text-[10px] uppercase font-semibold text-slate-500">Jefes</div>
+              <div className="mt-0.5 font-mono-num text-sm font-black text-rose-700">
                 {pirate.bossesDefeated || 0}
               </div>
             </div>
-            <div className="rounded-xl border border-[#1d3557] bg-[#101f37] p-2">
-              <div className="text-[10px] uppercase text-slate-400">Fruta</div>
-              <div className="mt-0.5 truncate text-[11px] font-bold text-purple-300">
+            <div className="rounded-xl border border-sky-200/85 bg-white/75 p-2">
+              <div className="text-[10px] uppercase font-semibold text-slate-500">Fruta</div>
+              <div className="mt-0.5 truncate text-[11px] font-bold text-purple-700">
                 {pirate.devilFruit || 'Ninguna'}
               </div>
             </div>
           </div>
 
           {/* Equipped Slots */}
-          <section className="rounded-xl border border-[#1d3557] bg-[#101f37] p-3 space-y-2">
-            <div className="text-[11px] font-black uppercase tracking-wider text-amber-300">
+          <section className="rounded-xl border border-sky-200/85 bg-white/75 p-3 space-y-2">
+            <div className="text-[11px] font-black uppercase tracking-wider text-amber-800">
               Equipo Activo (3 ranuras)
             </div>
             {(['arma', 'armadura', 'amuleto'] as EquipmentSlot[]).map((slot) => {
@@ -910,17 +935,17 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                   key={slot}
                   data-testid={`equipped-slot-${slot}`}
                   className={`flex items-center justify-between gap-2 rounded-lg border px-2.5 py-2 ${
-                    style ? `${style.border} bg-[#091324]` : 'border-slate-800 bg-[#08101e]'
+                    style ? `${style.border} bg-sky-50/85` : 'border-sky-200/75 bg-sky-50/55'
                   }`}
                 >
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5">
-                      <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[9px] font-bold uppercase text-slate-300">
+                      <span className="rounded bg-white/90 border border-sky-200 px-1.5 py-0.5 text-[9px] font-bold uppercase text-slate-700">
                         {SLOT_LABELS[slot]}
                       </span>
                       {item ? (
                         <>
-                          <span className="truncate text-xs font-bold text-white">{item.name}</span>
+                          <span className="truncate text-xs font-bold text-slate-900">{item.name}</span>
                           {style && (
                             <span className={`rounded px-1.5 py-0.5 text-[9px] font-bold ${style.badge}`}>
                               {style.label}
@@ -932,7 +957,7 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                       )}
                     </div>
                     {item && (
-                      <div className="mt-0.5 text-[10px] font-mono-num text-teal-300">
+                      <div className="mt-0.5 text-[10px] font-mono-num font-semibold text-teal-700">
                         {formatItemStatTags(item).join(' · ')}
                       </div>
                     )}
@@ -942,7 +967,7 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                     <button
                       type="button"
                       onClick={() => onUnequipSlot(pirate.id, slot)}
-                      className="shrink-0 rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] font-bold text-slate-200 hover:border-rose-400 hover:text-rose-300 cursor-pointer"
+                      className="shrink-0 rounded-md border border-sky-200 bg-white px-2 py-1 text-[10px] font-bold text-slate-700 hover:border-rose-400 hover:text-rose-700 cursor-pointer"
                     >
                       Quitar
                     </button>
@@ -953,16 +978,16 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
           </section>
 
           {/* Obtained Inventory Loot */}
-          <section className="rounded-xl border border-[#1d3557] bg-[#101f37] p-3 space-y-2">
+          <section className="rounded-xl border border-sky-200/85 bg-white/75 p-3 space-y-2">
             <div className="flex items-center justify-between">
-              <span className="text-[11px] font-black uppercase tracking-wider text-teal-300">
+              <span className="text-[11px] font-black uppercase tracking-wider text-teal-700">
                 Botín Obtenido ({inventoryItems.length})
               </span>
             </div>
 
             {inventoryItems.length === 0 ? (
-              <div className="rounded-lg border border-slate-800 bg-[#091324] p-2.5 text-[11px] text-slate-400 leading-relaxed">
-                Aún no tienes piezas de equipo. Derrota a <strong className="text-rose-300">{boss.name}</strong> o a los Subjefes en <strong className="text-amber-300">Misiones</strong> para conseguir espadas, armaduras y amuletos.
+              <div className="rounded-lg border border-sky-200 bg-sky-50/80 p-2.5 text-[11px] text-slate-600 leading-relaxed">
+                Aún no tienes piezas de equipo. Derrota a <strong className="text-rose-700">{boss.name}</strong> o a los Subjefes en <strong className="text-amber-800">Misiones</strong> para conseguir espadas, armaduras y amuletos.
               </div>
             ) : (
               <div className="space-y-2">
@@ -973,20 +998,20 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                     <div
                       key={item.id}
                       data-testid={`inventory-item-${item.id}`}
-                      className={`flex items-center justify-between gap-2 rounded-lg border p-2.5 bg-[#091324] ${style.border}`}
+                      className={`flex items-center justify-between gap-2 rounded-lg border p-2.5 bg-sky-50/85 ${style.border}`}
                     >
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-1.5">
-                          <span className="text-xs font-black text-white">{item.name}</span>
+                          <span className="text-xs font-black text-slate-900">{item.name}</span>
                           <span className={`rounded px-1.5 py-0.5 text-[9px] font-bold ${style.badge}`}>
                             {style.label}
                           </span>
-                          <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[9px] text-slate-300">
+                          <span className="rounded bg-white/90 border border-sky-200 px-1.5 py-0.5 text-[9px] text-slate-700">
                             {SLOT_LABELS[item.slot]}
                           </span>
                         </div>
-                        <p className="mt-0.5 text-[10px] text-slate-400">{item.description}</p>
-                        <div className="mt-0.5 text-[10px] font-mono-num font-bold text-teal-300">
+                        <p className="mt-0.5 text-[10px] text-slate-600">{item.description}</p>
+                        <div className="mt-0.5 text-[10px] font-mono-num font-bold text-teal-700">
                           {formatItemStatTags(item).join(' · ')}
                         </div>
                       </div>
@@ -997,7 +1022,7 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                         onClick={() => onEquipItem(pirate.id, item.id)}
                         className={`shrink-0 rounded-lg px-2.5 py-1.5 text-[10px] font-black cursor-pointer ${
                           isEquipped
-                            ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 cursor-default'
+                            ? 'bg-emerald-500/15 text-emerald-800 border border-emerald-500/40 cursor-default'
                             : 'bg-[#f5b82e] text-slate-950 hover:bg-amber-300'
                         }`}
                       >
@@ -1011,15 +1036,15 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
 
             {/* Local Boss Possible Drops Hint */}
             {bossDrops.length > 0 && (
-              <div className="pt-1.5 border-t border-slate-800/80">
-                <div className="text-[10px] font-bold text-slate-400 mb-1">
+              <div className="pt-1.5 border-t border-sky-200/80">
+                <div className="text-[10px] font-bold text-slate-600 mb-1">
                   Drops posibles de {boss.name} en {currIsland.name}:
                 </div>
                 <div className="flex flex-wrap gap-1.5">
                   {bossDrops.map((drop) => (
                     <span
                       key={drop.id}
-                      className="rounded border border-slate-700 bg-[#08101e] px-2 py-0.5 text-[10px] text-slate-300"
+                      className="rounded border border-sky-200 bg-sky-50/85 px-2 py-0.5 text-[10px] text-slate-700"
                     >
                       {drop.name} ({SLOT_LABELS[drop.slot]})
                     </span>
@@ -1031,7 +1056,7 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
 
           {/* Traits with Advantage & Disadvantage */}
           <div className="space-y-1.5">
-            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-600">
               Rasgos de Personaje
             </div>
             {[...pirate.physicalTraits, ...pirate.mentalTraits].map((id) => {
@@ -1040,16 +1065,16 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
               return (
                 <div
                   key={id}
-                  className="rounded-xl border border-[#1d3557] bg-[#101f37] px-3 py-2 text-xs"
+                  className="rounded-xl border border-sky-200/85 bg-white/75 px-3 py-2 text-xs"
                 >
                   <div className="flex items-center justify-between">
-                    <span className="font-bold text-white">{opt.label}</span>
-                    <span className="text-[10px] uppercase text-slate-400">
+                    <span className="font-bold text-slate-900">{opt.label}</span>
+                    <span className="text-[10px] uppercase text-slate-500">
                       {opt.category === 'physical' ? 'Físico' : 'Psicológico'}
                     </span>
                   </div>
-                  <div className="mt-0.5 text-[10px] text-emerald-300">+ {opt.advantage}</div>
-                  <div className="text-[10px] text-rose-300">- {opt.disadvantage}</div>
+                  <div className="mt-0.5 text-[10px] font-semibold text-emerald-700">+ {opt.advantage}</div>
+                  <div className="text-[10px] font-medium text-rose-700">- {opt.disadvantage}</div>
                 </div>
               );
             })}
@@ -1061,8 +1086,8 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
       {activeTab === 'build' && (
         <div className="space-y-3">
           {/* Live Stage Preview + Read-Only Creation Traits */}
-          <div className="flex items-center gap-3 rounded-xl border border-[#1d3557] bg-[#0b1628] p-3">
-            <div className="flex h-[84px] w-[84px] shrink-0 items-center justify-center rounded-xl border border-slate-700 bg-[#060f1d]">
+          <div className="flex items-center gap-3 rounded-xl border border-sky-200/85 bg-sky-50/80 p-3">
+            <div className="flex h-[84px] w-[84px] shrink-0 items-center justify-center rounded-xl border border-sky-200 bg-white/95">
               <PirateAvatarSvg
                 name={pirate.name}
                 flagColor={pirate.flagColor}
@@ -1086,15 +1111,15 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
               />
             </div>
             <div className="min-w-0 flex-1 space-y-1">
-              <div className="text-xs font-black text-white">
+              <div className="text-xs font-black text-slate-900">
                 {raceInfo.label} ·{' '}
                 {HAIR_STYLES.find((h) => h.id === pirate.hairStyle)?.label ?? pirate.hairStyle}
               </div>
-              <p className="text-[10px] text-amber-300/90 font-semibold leading-snug" data-testid="build-locked-notice">
+              <p className="text-[10px] text-amber-800 font-semibold leading-snug" data-testid="build-locked-notice">
                 Raza y pelo fijados al crear el personaje
               </p>
-              <p className="text-[10px] text-slate-400 leading-snug">{raceInfo.hint}</p>
-              <div className="text-[10px] font-bold text-teal-300">
+              <p className="text-[10px] text-slate-600 leading-snug">{raceInfo.hint}</p>
+              <div className="text-[10px] font-bold text-teal-700">
                 {[
                   raceInfo.fuerzaBonus !== 0
                     ? `${raceInfo.fuerzaBonus > 0 ? '+' : ''}${raceInfo.fuerzaBonus} Fue`
@@ -1116,7 +1141,7 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
           </div>
 
           {/* Ropa, Color y Capa */}
-          <div className="rounded-xl border border-[#1d3557] bg-[#101f37] p-2.5 space-y-2.5">
+          <div className="rounded-xl border border-sky-200/85 bg-white/75 p-2.5 space-y-2.5">
             <HorizontalOptionRail label="Ropa y Atuendo" testId="build-rail-outfit">
               {OUTFIT_STYLES.map((out) => (
                 <button
@@ -1126,8 +1151,8 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                   onClick={() => onUpdateBuild(pirate.id, { outfitStyle: out.id })}
                   className={`shrink-0 rounded-lg border px-2.5 py-1.5 text-[10px] font-bold cursor-pointer whitespace-nowrap ${
                     pirate.outfitStyle === out.id
-                      ? 'border-sky-300 bg-sky-400 text-slate-950'
-                      : 'border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700'
+                      ? 'border-sky-600 bg-sky-600 text-white'
+                      : 'border-sky-200 bg-sky-50/85 text-slate-800 hover:bg-white'
                   }`}
                 >
                   {out.label}
@@ -1144,14 +1169,14 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                   aria-label={`Color de ropa ${c.label}`}
                   onClick={() => onUpdateBuild(pirate.id, { outfitColor: c.hex })}
                   className={`h-5 w-5 rounded-full border-2 cursor-pointer ${
-                    pirate.outfitColor === c.hex ? 'border-amber-300 scale-110' : 'border-slate-600'
+                    pirate.outfitColor === c.hex ? 'border-amber-600 scale-110 ring-1 ring-amber-400' : 'border-slate-300'
                   }`}
                   style={{ backgroundColor: c.hex }}
                 />
               ))}
             </div>
 
-            <div className="pt-1.5 border-t border-slate-800">
+            <div className="pt-1.5 border-t border-sky-200/80">
               <HorizontalOptionRail
                 label="Capa o Abrigo en Espalda"
                 testId="build-rail-cape"
@@ -1159,10 +1184,10 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                   (pirate.capeStyle ?? 'none') !== 'none' ? (
                     <span
                       data-testid="build-cape-color-hint"
-                      className="flex items-center gap-1 text-[10px] font-bold text-amber-200"
+                      className="flex items-center gap-1 text-[10px] font-bold text-amber-800"
                     >
                       <span
-                        className="inline-block h-2.5 w-2.5 rounded-sm border border-white/40"
+                        className="inline-block h-2.5 w-2.5 rounded-sm border border-slate-400"
                         style={{
                           backgroundColor:
                             pirate.capeColor ??
@@ -1178,7 +1203,7 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                       </span>
                     </span>
                   ) : (
-                    <span className="text-[9px] text-slate-400">Re-clic para color</span>
+                    <span className="text-[9px] text-slate-500">Re-clic para color</span>
                   )
                 }
               >
@@ -1204,8 +1229,8 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                       }}
                       className={`flex shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[10px] font-bold cursor-pointer whitespace-nowrap ${
                         selected
-                          ? 'border-amber-200 bg-[#f5b82e] text-slate-950'
-                          : 'border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700'
+                          ? 'border-amber-600 bg-[#f5b82e] text-slate-950'
+                          : 'border-sky-200 bg-sky-50/85 text-slate-800 hover:bg-white'
                       }`}
                     >
                       {selected && cOpt.id !== 'none' && (
@@ -1223,7 +1248,7 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
           </div>
 
           {/* Sombrero, Cicatrices y Marcas (Re-click cycles color) */}
-          <div className="rounded-xl border border-[#1d3557] bg-[#101f37] p-2.5 space-y-2.5">
+          <div className="rounded-xl border border-sky-200/85 bg-white/75 p-2.5 space-y-2.5">
             <HorizontalOptionRail
               label="Sombrero o Corona"
               testId="build-rail-hat"
@@ -1231,10 +1256,10 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                 pirate.hatStyle !== 'none' ? (
                   <span
                     data-testid="build-hat-color-hint"
-                    className="flex items-center gap-1 text-[10px] font-bold text-teal-200"
+                    className="flex items-center gap-1 text-[10px] font-bold text-teal-800"
                   >
                     <span
-                      className="inline-block h-2.5 w-2.5 rounded-sm border border-white/40"
+                      className="inline-block h-2.5 w-2.5 rounded-sm border border-slate-400"
                       style={{
                         backgroundColor:
                           pirate.hatColor ??
@@ -1250,7 +1275,7 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                     </span>
                   </span>
                 ) : (
-                  <span className="text-[9px] text-slate-400">Re-clic para color</span>
+                  <span className="text-[9px] text-slate-500">Re-clic para color</span>
                 )
               }
             >
@@ -1275,13 +1300,13 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                     }}
                     className={`flex shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[10px] font-bold cursor-pointer whitespace-nowrap ${
                       selected
-                        ? 'border-teal-200 bg-teal-400 text-slate-950'
-                        : 'border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700'
+                        ? 'border-teal-700 bg-teal-600 text-white'
+                        : 'border-sky-200 bg-sky-50/85 text-slate-800 hover:bg-white'
                     }`}
                   >
                     {selected && hat.id !== 'none' && (
                       <span
-                        className="h-2.5 w-2.5 rounded-sm border border-slate-950/60"
+                        className="h-2.5 w-2.5 rounded-sm border border-white/70"
                         style={{ backgroundColor: pirate.hatColor ?? hat.defaultColor }}
                       />
                     )}
@@ -1291,7 +1316,7 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
               })}
             </HorizontalOptionRail>
 
-            <div className="pt-1.5 border-t border-slate-800">
+            <div className="pt-1.5 border-t border-sky-200/80">
               <HorizontalOptionRail
                 label="Cicatrices y Accesorios"
                 testId="build-rail-accessory"
@@ -1299,10 +1324,10 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                   pirate.accessory !== 'none' ? (
                     <span
                       data-testid="build-acc-color-hint"
-                      className="flex items-center gap-1 text-[10px] font-bold text-amber-200"
+                      className="flex items-center gap-1 text-[10px] font-bold text-amber-800"
                     >
                       <span
-                        className="inline-block h-2.5 w-2.5 rounded-sm border border-white/40"
+                        className="inline-block h-2.5 w-2.5 rounded-sm border border-slate-400"
                         style={{
                           backgroundColor:
                             pirate.accessoryColor ??
@@ -1319,7 +1344,7 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                       </span>
                     </span>
                   ) : (
-                    <span className="text-[9px] text-slate-400">Re-clic para color</span>
+                    <span className="text-[9px] text-slate-500">Re-clic para color</span>
                   )
                 }
               >
@@ -1347,8 +1372,8 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                       }}
                       className={`flex shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[10px] font-bold cursor-pointer whitespace-nowrap ${
                         selected
-                          ? 'border-amber-200 bg-amber-400 text-slate-950'
-                          : 'border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700'
+                          ? 'border-amber-600 bg-[#f5b82e] text-slate-950'
+                          : 'border-sky-200 bg-sky-50/85 text-slate-800 hover:bg-white'
                       }`}
                     >
                       {selected && acc.id !== 'none' && (
@@ -1365,18 +1390,18 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
             </div>
           </div>
 
-          {/* In-World Crew Management */}
-          <section className="rounded-xl border border-teal-500/35 bg-[#0e2036] p-2.5 space-y-2">
+          {/* In-World Crew Management & Auto Role */}
+          <section className="rounded-xl border border-teal-500/35 bg-teal-50/75 p-2.5 space-y-2">
             <div className="flex items-center justify-between gap-2">
-              <span className="flex items-center gap-1.5 text-[11px] font-black uppercase tracking-wider text-teal-300">
+              <span className="flex items-center gap-1.5 text-[11px] font-black uppercase tracking-wider text-teal-800">
                 <Users className="h-3.5 w-3.5" />
-                Tripulación y Rol
+                Tripulación y Rol Evolutivo
               </span>
               {!editingCrew && (
                 <button
                   type="button"
                   onClick={() => setEditingCrew(true)}
-                  className="flex items-center gap-1 rounded-lg border border-teal-400/40 bg-teal-400/15 px-2 py-0.5 text-[10px] font-bold text-teal-200 hover:bg-teal-400/25 cursor-pointer"
+                  className="flex items-center gap-1 rounded-lg border border-teal-500/40 bg-white/85 px-2 py-0.5 text-[10px] font-bold text-teal-800 hover:bg-white cursor-pointer"
                 >
                   <Edit3 className="h-3 w-3" />
                   <span>{hasCrew ? 'Editar' : 'Formar'}</span>
@@ -1392,24 +1417,11 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                   value={crewInput}
                   onChange={(e) => setCrewInput(e.target.value)}
                   placeholder={`Ej. Banda de ${pirate.name}`}
-                  className="w-full rounded-lg border border-slate-700 bg-[#081221] px-2.5 py-1.5 text-xs text-white focus:border-teal-400 focus:outline-none"
+                  className="w-full rounded-lg border border-sky-200 bg-white px-2.5 py-1.5 text-xs text-slate-900 focus:border-teal-600 focus:outline-none"
                 />
-                <div className="flex flex-wrap gap-1">
-                  {PIRATE_ROLES.map((r) => (
-                    <button
-                      key={r}
-                      type="button"
-                      onClick={() => setRoleInput(r)}
-                      className={`rounded-md px-2 py-0.5 text-[10px] font-bold cursor-pointer ${
-                        roleInput === r
-                          ? 'bg-teal-400 text-slate-950'
-                          : 'bg-slate-800 text-slate-300'
-                      }`}
-                    >
-                      {r}
-                    </button>
-                  ))}
-                </div>
+                <p className="text-[10px] text-slate-700 leading-snug">
+                  Rol actual: <strong className="text-amber-800">{pirate.role}</strong> — evoluciona automáticamente con tus estadísticas y acciones.
+                </p>
                 <div className="flex items-center justify-between gap-2 pt-1">
                   <div className="flex gap-1.5">
                     {FLAG_COLORS.map((c) => (
@@ -1419,7 +1431,7 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                         aria-label={c.label}
                         onClick={() => setColorInput(c.hex)}
                         className={`h-4 w-4 rounded-full border-2 cursor-pointer ${
-                          colorInput === c.hex ? 'border-amber-300 scale-110' : 'border-slate-600'
+                          colorInput === c.hex ? 'border-amber-600 scale-110 ring-1 ring-amber-400' : 'border-slate-300'
                         }`}
                         style={{ backgroundColor: c.hex }}
                       />
@@ -1429,13 +1441,13 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                     <button
                       type="button"
                       onClick={() => setEditingCrew(false)}
-                      className="rounded-md border border-slate-700 px-2 py-1 text-[10px] text-slate-300 cursor-pointer"
+                      className="rounded-md border border-sky-200 bg-white px-2 py-1 text-[10px] text-slate-700 cursor-pointer"
                     >
                       Cancelar
                     </button>
                     <button
                       type="submit"
-                      className="flex items-center gap-1 rounded-md bg-teal-400 px-2 py-1 text-[10px] font-black text-slate-950 cursor-pointer"
+                      className="flex items-center gap-1 rounded-md bg-teal-600 px-2 py-1 text-[10px] font-black text-white cursor-pointer"
                     >
                       <Check className="h-3 w-3 stroke-[3]" />
                       Guardar
@@ -1444,13 +1456,18 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                 </div>
               </form>
             ) : (
-              <div className="flex items-center justify-between text-xs">
-                <span className="font-bold text-white truncate">
-                  {hasCrew ? pirate.crewName : 'En solitario'}
-                </span>
-                <span className="rounded bg-slate-800 px-2 py-0.5 text-[10px] font-bold text-amber-300">
-                  {pirate.role}
-                </span>
+              <div className="space-y-1">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-bold text-slate-900 truncate">
+                    {hasCrew ? pirate.crewName : 'En solitario'}
+                  </span>
+                  <span className="rounded border border-amber-400/50 bg-amber-100/90 px-2 py-0.5 text-[10px] font-bold text-amber-800">
+                    {pirate.role}
+                  </span>
+                </div>
+                <p className="text-[10px] text-slate-700 leading-snug">
+                  {roleEvolution.reason}. {roleEvolution.nextHint}
+                </p>
               </div>
             )}
           </section>
@@ -1461,7 +1478,7 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
       {activeTab === 'noticias' && (
         <div className="space-y-2">
           {characterEvents.length === 0 ? (
-            <div className="rounded-xl border border-slate-800 bg-[#101f37] p-4 text-xs text-slate-400">
+            <div className="rounded-xl border border-sky-200/85 bg-white/75 p-4 text-xs text-slate-600">
               Aún no hay sucesos registrados. Selecciona una misión o deja que explore la isla.
             </div>
           ) : (
@@ -1470,13 +1487,15 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                 key={ev.id}
                 type="button"
                 onClick={() => {
-                  onChangeMapView('globe');
+                  if (mapView === 'island') {
+                    onChangeMapView('map');
+                  }
                   onFocusIsland(ev.islandId);
                 }}
                 className={`w-full text-left rounded-xl border p-2.5 transition-colors cursor-pointer ${
                   ev.type === 'drop'
-                    ? 'border-amber-400/50 bg-amber-950/25 hover:border-amber-300'
-                    : 'border-[#1d3557] bg-[#101f37] hover:border-amber-400/60'
+                    ? 'border-amber-400 bg-amber-50/90 hover:border-amber-500'
+                    : 'border-sky-200/85 bg-white/75 hover:border-amber-400 hover:bg-white/95'
                 }`}
               >
                 <div className="flex items-center justify-between gap-2 text-[10px]">
@@ -1484,12 +1503,12 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                     {ev.sea} · Día {ev.day} ({ev.timeLabel})
                   </span>
                   {ev.bountyDelta > 0 && (
-                    <span className="font-mono-num font-black text-amber-300">
+                    <span className="font-mono-num font-black text-amber-800">
                       +{formatShortBounty(ev.bountyDelta)}
                     </span>
                   )}
                 </div>
-                <p className="mt-1 text-xs leading-relaxed text-slate-200">{ev.message}</p>
+                <p className="mt-1 text-xs leading-relaxed text-slate-800">{ev.message}</p>
               </button>
             ))
           )}
@@ -1500,24 +1519,24 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
       {activeTab === 'misiones' && (
         <div className="space-y-3.5">
           {/* Island Canon Size & Multi-Day Stay Banner */}
-          <div className="rounded-xl border border-teal-500/35 bg-[#0e2036] px-3 py-2 text-[11px] text-slate-200 flex items-center justify-between gap-2">
+          <div className="rounded-xl border border-teal-500/35 bg-teal-50/80 px-3 py-2 text-[11px] text-slate-700 flex items-center justify-between gap-2">
             <div className="min-w-0">
-              <span className="font-black text-teal-300 capitalize">Isla {sizeTier}</span>
-              <span className="text-slate-400">
+              <span className="font-black text-teal-800 capitalize">Isla {sizeTier}</span>
+              <span className="text-slate-600">
                 {' '}
                 · {currIsland.canonSizeNote || currIsland.description}
               </span>
             </div>
-            <span className="font-mono-num font-black text-amber-300 shrink-0 whitespace-nowrap">
+            <span className="font-mono-num font-black text-amber-800 shrink-0 whitespace-nowrap">
               Día {daysHere}/{recommendedDays}
             </span>
           </div>
 
           {/* NPC Quests Section */}
           <div className="space-y-2">
-            <div className="flex items-center justify-between text-[11px] font-bold uppercase tracking-wider text-amber-300">
+            <div className="flex items-center justify-between text-[11px] font-bold uppercase tracking-wider text-amber-800">
               <span>Encargos de Habitantes (NPC)</span>
-              <span className="font-mono-num text-slate-400">
+              <span className="font-mono-num text-slate-600">
                 {doneQuestsCount}/{npcQuests.length}
               </span>
             </div>
@@ -1528,12 +1547,12 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                   key={q.id}
                   className={`flex items-center justify-between gap-2 rounded-xl border p-2 ${
                     done
-                      ? 'border-emerald-500/40 bg-emerald-950/20'
-                      : 'border-[#1d3557] bg-[#101f37]'
+                      ? 'border-emerald-300 bg-emerald-50/80'
+                      : 'border-sky-200/85 bg-white/75'
                   }`}
                 >
                   <div className="flex items-center gap-2 min-w-0 flex-1">
-                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-slate-700 bg-[#081221]">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-sky-200 bg-white/95">
                       <PirateAvatarSvg
                         name={q.npcName}
                         flagColor={q.outfitColor}
@@ -1555,22 +1574,22 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                       />
                     </div>
                     <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-1 text-xs font-black text-white">
+                      <div className="flex items-center gap-1 text-xs font-black text-slate-900">
                         <span className="truncate">{q.title}</span>
                         {done && (
-                          <span className="rounded bg-emerald-500/20 px-1 py-0.5 text-[9px] text-emerald-300 shrink-0">
+                          <span className="rounded bg-emerald-500/15 border border-emerald-400/50 px-1 py-0.5 text-[9px] text-emerald-800 shrink-0">
                             Hecha
                           </span>
                         )}
                       </div>
-                      <p className="text-[10px] text-slate-400 truncate">
+                      <p className="text-[10px] text-slate-600 truncate">
                         {q.npcName} ({q.npcRole})
                       </p>
                       <div className="mt-0.5 flex flex-wrap gap-1.5 text-[9px] font-mono-num font-bold">
-                        <span className="text-sky-300">+{q.xpReward} XP</span>
-                        <span className="text-emerald-300">+{q.berriesReward} mon</span>
+                        <span className="text-sky-700">+{q.xpReward} XP</span>
+                        <span className="text-emerald-700">+{q.berriesReward} mon</span>
                         {q.bountyReward > 0 && (
-                          <span className="text-amber-300">
+                          <span className="text-amber-700">
                             +{formatShortBounty(q.bountyReward)}
                           </span>
                         )}
@@ -1584,8 +1603,8 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                     onClick={() => onRunNpcQuest(pirate.id, q.id)}
                     className={`shrink-0 rounded-lg px-2 py-1.5 text-[10px] font-black cursor-pointer disabled:opacity-50 ${
                       done
-                        ? 'border border-emerald-400/40 bg-emerald-950/60 text-emerald-200 hover:bg-emerald-900/60'
-                        : 'bg-teal-400 text-slate-950 hover:bg-teal-300'
+                        ? 'border border-emerald-400/60 bg-white/90 text-emerald-800 hover:bg-emerald-50'
+                        : 'bg-teal-600 text-white hover:bg-teal-500'
                     }`}
                   >
                     {done ? 'Repetir' : 'Cumplir'}
@@ -1598,7 +1617,7 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
           {/* Mini-Bosses Section */}
           {miniBosses.length > 0 && (
             <div className="space-y-2">
-              <div className="text-[11px] font-bold uppercase tracking-wider text-orange-300">
+              <div className="text-[11px] font-bold uppercase tracking-wider text-orange-700">
                 Subjefes de {currIsland.name}
               </div>
               {miniBosses.map((mb) => {
@@ -1611,12 +1630,12 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                     key={mb.id}
                     className={`flex items-center justify-between gap-2 rounded-xl border p-2 ${
                       defeated
-                        ? 'border-emerald-500/40 bg-emerald-950/15'
-                        : 'border-orange-500/40 bg-orange-950/20'
+                        ? 'border-emerald-300 bg-emerald-50/80'
+                        : 'border-orange-300 bg-orange-50/80'
                     }`}
                   >
                     <div className="flex items-center gap-2 min-w-0 flex-1">
-                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-orange-500/40 bg-[#081221]">
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-orange-300 bg-white/95">
                         <PirateAvatarSvg
                           name={mb.name}
                           flagColor={mb.outfitColor}
@@ -1639,24 +1658,24 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                         />
                       </div>
                       <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-1 text-xs font-black text-white">
+                        <div className="flex items-center gap-1 text-xs font-black text-slate-900">
                           <span className="truncate">{mb.name}</span>
                           {defeated && (
-                            <span className="rounded bg-emerald-500/20 px-1 py-0.5 text-[9px] text-emerald-300">
+                            <span className="rounded bg-emerald-500/15 border border-emerald-400/50 px-1 py-0.5 text-[9px] text-emerald-800">
                               Vencido
                             </span>
                           )}
                         </div>
-                        <p className="text-[10px] text-slate-400 truncate">
+                        <p className="text-[10px] text-slate-600 truncate">
                           {mb.title} · Poder {mb.power}
                         </p>
                         <div className="mt-0.5 flex flex-wrap gap-1.5 text-[9px] font-mono-num font-bold">
-                          <span className="text-sky-300">+{mb.xpReward} XP</span>
-                          <span className="text-amber-300">
+                          <span className="text-sky-700">+{mb.xpReward} XP</span>
+                          <span className="text-amber-700">
                             +{formatShortBounty(mb.bountyReward)}
                           </span>
                           {mbDrops.length > 0 && (
-                            <span className="text-purple-300 truncate">Drop: {mbDrops[0]}</span>
+                            <span className="text-purple-700 truncate">Drop: {mbDrops[0]}</span>
                           )}
                         </div>
                       </div>
@@ -1665,7 +1684,7 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                       type="button"
                       disabled={Boolean(pirate.sailingToIslandId)}
                       onClick={() => onChallengeMiniBoss(pirate.id, mb.id)}
-                      className="shrink-0 rounded-lg bg-orange-500 px-2 py-1.5 text-[10px] font-black text-slate-950 hover:bg-orange-400 cursor-pointer disabled:opacity-50"
+                      className="shrink-0 rounded-lg bg-orange-500 px-2 py-1.5 text-[10px] font-black text-white hover:bg-orange-400 cursor-pointer disabled:opacity-50"
                     >
                       Desafiar
                     </button>
@@ -1677,7 +1696,7 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
 
           {/* General Missions */}
           <div className="space-y-2">
-            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-600">
               Misiones generales en {currIsland.name}
             </div>
             {islandMissions.map((m) => (
@@ -1685,29 +1704,29 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                 key={m.id}
                 className={`flex items-center justify-between gap-2 rounded-xl border p-2.5 ${
                   m.id === 'jefe'
-                    ? 'border-rose-500/45 bg-rose-950/25'
-                    : 'border-[#1d3557] bg-[#101f37]'
+                    ? 'border-rose-300 bg-rose-50/85'
+                    : 'border-sky-200/85 bg-white/75'
                 }`}
               >
                 <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-1.5 text-xs font-black text-white">
-                    {m.id === 'jefe' && <Skull className="h-3.5 w-3.5 text-rose-400 shrink-0" />}
-                    {m.id === 'duelo' && <Swords className="h-3.5 w-3.5 text-amber-300 shrink-0" />}
+                  <div className="flex items-center gap-1.5 text-xs font-black text-slate-900">
+                    {m.id === 'jefe' && <Skull className="h-3.5 w-3.5 text-rose-600 shrink-0" />}
+                    {m.id === 'duelo' && <Swords className="h-3.5 w-3.5 text-amber-700 shrink-0" />}
                     <span className="truncate">{m.title}</span>
                   </div>
-                  <p className="mt-0.5 text-[10px] text-slate-400 leading-snug">{m.subtitle}</p>
+                  <p className="mt-0.5 text-[10px] text-slate-600 leading-snug">{m.subtitle}</p>
                   <div className="mt-1 flex flex-wrap gap-2 text-[9px] font-mono-num font-bold">
-                    <span className="text-sky-300">+{m.xpReward} XP</span>
-                    <span className="text-emerald-300">+{m.berriesReward} mon</span>
+                    <span className="text-sky-700">+{m.xpReward} XP</span>
+                    <span className="text-emerald-700">+{m.berriesReward} mon</span>
                     <span
                       className={
-                        m.id === 'jefe' || m.id === 'duelo' ? 'text-amber-300' : 'text-slate-500'
+                        m.id === 'jefe' || m.id === 'duelo' ? 'text-amber-800' : 'text-slate-500'
                       }
                     >
                       {m.bountyNote}
                     </span>
                     {m.id === 'jefe' && bossDrops.length > 0 && (
-                      <span className="text-purple-300">
+                      <span className="text-purple-700">
                         Botín: {bossDrops.map((d) => d.name).join(' / ')}
                       </span>
                     )}
@@ -1720,7 +1739,7 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                   onClick={() => onRunMission(pirate.id, m.id)}
                   className={`shrink-0 rounded-lg px-2.5 py-1.5 text-[11px] font-black cursor-pointer disabled:opacity-50 ${
                     m.id === 'jefe'
-                      ? 'bg-rose-500 text-white hover:bg-rose-400'
+                      ? 'bg-rose-600 text-white hover:bg-rose-500'
                       : 'bg-[#f5b82e] text-slate-950 hover:bg-amber-300'
                   }`}
                 >
@@ -1732,20 +1751,20 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
 
           {/* Sabaody Bubble Coating Quick Action */}
           {currIsland.id === 'archipielago-sabaody' && !pirate.sailingToIslandId && (
-            <div className="rounded-xl border border-cyan-400/50 bg-cyan-950/30 p-2.5 flex items-center justify-between gap-2">
+            <div className="rounded-xl border border-cyan-300 bg-cyan-50/85 p-2.5 flex items-center justify-between gap-2">
               <div className="min-w-0">
-                <div className="text-xs font-black text-cyan-200 flex items-center gap-1.5">
-                  <Sparkles className="h-3.5 w-3.5 text-cyan-300 shrink-0" />
+                <div className="text-xs font-black text-cyan-900 flex items-center gap-1.5">
+                  <Sparkles className="h-3.5 w-3.5 text-cyan-700 shrink-0" />
                   <span>Burbuja Yarukiman</span>
                 </div>
-                <p className="text-[10px] text-cyan-100/80">
+                <p className="text-[10px] text-cyan-800">
                   {pirate.bubbleCoated
                     ? 'Tu barco ya está revestido para bajar a la Isla de los Hombres-Pez.'
                     : 'Envuelve tu barco en resina Yarukiman para descender a Isla de los Hombres-Pez.'}
                 </p>
               </div>
               {pirate.bubbleCoated ? (
-                <span className="shrink-0 rounded-lg bg-cyan-500/20 border border-cyan-400/50 px-2 py-1 text-[10px] font-black text-cyan-200">
+                <span className="shrink-0 rounded-lg bg-white/90 border border-cyan-400 px-2 py-1 text-[10px] font-black text-cyan-800">
                   Activa ✓
                 </span>
               ) : (
@@ -1753,7 +1772,7 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                   type="button"
                   data-testid="panel-sabaody-bubble-btn"
                   onClick={() => onCoatShipBubble(pirate.id)}
-                  className="shrink-0 rounded-lg bg-cyan-400 px-2.5 py-1.5 text-[10px] font-black text-slate-950 hover:bg-cyan-300 cursor-pointer"
+                  className="shrink-0 rounded-lg bg-cyan-600 px-2.5 py-1.5 text-[10px] font-black text-white hover:bg-cyan-500 cursor-pointer"
                 >
                   Entrar en burbuja
                 </button>
@@ -1762,8 +1781,8 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
           )}
 
           {/* Voyage Selector */}
-          <div className="rounded-xl border border-[#1d3557] bg-[#101f37] p-2.5 space-y-2">
-            <span className="text-xs font-black text-sky-300 flex items-center gap-1.5">
+          <div className="rounded-xl border border-sky-200/85 bg-white/75 p-2.5 space-y-2">
+            <span className="text-xs font-black text-sky-700 flex items-center gap-1.5">
               <Compass className="h-3.5 w-3.5" />
               Zarpar a otra isla e islas menores
             </span>
@@ -1776,8 +1795,8 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                   onClick={() => setSelectedSeaFilter(sea)}
                   className={`rounded-md px-2 py-0.5 text-[10px] font-bold cursor-pointer ${
                     selectedSeaFilter === sea
-                      ? 'bg-amber-400 text-slate-950'
-                      : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                      ? 'bg-[#f5b82e] text-slate-950'
+                      : 'bg-sky-50 border border-sky-200 text-slate-700 hover:bg-white'
                   }`}
                 >
                   {sea}
@@ -1797,27 +1816,27 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                   return (
                     <div
                       key={isl.id}
-                      className="flex items-center justify-between gap-2 rounded-lg border border-slate-800 bg-[#0b1526] px-2 py-1.5"
+                      className="flex items-center justify-between gap-2 rounded-lg border border-sky-200/85 bg-sky-50/75 px-2 py-1.5"
                     >
                       <div className="min-w-0">
-                        <div className="truncate text-[11px] font-bold text-white flex items-center gap-1">
+                        <div className="truncate text-[11px] font-bold text-slate-900 flex items-center gap-1">
                           <span className="truncate">
                             {isl.canonOrder ? `#${isl.canonOrder} ` : ''}
                             {isl.name}
                           </span>
                           {isl.isMiniIsland && (
-                            <span className="rounded bg-amber-400/15 px-1 py-0.2 text-[8px] font-black text-amber-300 shrink-0">
+                            <span className="rounded bg-amber-100 border border-amber-300 px-1 py-0.2 text-[8px] font-black text-amber-800 shrink-0">
                               ✦ Mini-isla
                             </span>
                           )}
                         </div>
-                        <div className="text-[9px] text-slate-400">
-                          <span className="capitalize text-teal-300">{islTier}</span> · ~{islDays}d ·{' '}
-                          <span className="text-sky-300 font-semibold">~{etaLabel}</span> · Peligro{' '}
+                        <div className="text-[9px] text-slate-600">
+                          <span className="capitalize font-semibold text-teal-700">{islTier}</span> · ~{islDays}d ·{' '}
+                          <span className="text-sky-700 font-semibold">~{etaLabel}</span> · Peligro{' '}
                           {isl.dangerTier}/5
                           {viaCenter ? ' · Centro' : ''}
                           {isl.id === 'isla-hombres-pez' && (
-                            <span className={needsBubble ? 'text-rose-300 font-bold' : 'text-cyan-300 font-bold'}>
+                            <span className={needsBubble ? 'text-rose-700 font-bold' : 'text-cyan-700 font-bold'}>
                               {needsBubble ? ' · Requiere burbuja Sabaody' : ' · Burbuja lista ✓'}
                             </span>
                           )}
@@ -1835,8 +1854,8 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                         }}
                         className={`shrink-0 rounded-md px-2 py-1 text-[10px] font-black cursor-pointer disabled:opacity-50 ${
                           needsBubble
-                            ? 'border border-cyan-500/50 bg-cyan-950/60 text-cyan-200 hover:bg-cyan-900/60'
-                            : 'bg-sky-500 text-slate-950 hover:bg-sky-400'
+                            ? 'border border-cyan-400 bg-cyan-50 text-cyan-800 hover:bg-cyan-100'
+                            : 'bg-sky-600 text-white hover:bg-sky-500'
                         }`}
                       >
                         Zarpar
@@ -1852,29 +1871,17 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
       {/* TAB: MAPA */}
       {activeTab === 'mapa' && (
         <div className="space-y-3">
-          <div className="rounded-xl border border-[#1d3557] bg-[#101f37] p-3 text-xs space-y-2">
-            <div className="font-bold text-amber-300">Mapa 2D Interactivo y Globo 3D</div>
-            <p className="text-[11px] text-slate-300 leading-relaxed">
-              Haz zoom en el globo o cambia al <strong>Mapa 2D</strong> para inspeccionar el interior de
-              las islas, ver los ~50 barcos rivales navegando y descender a la Fosa de los Hombres-Pez.
+          <div className="rounded-xl border border-sky-200/85 bg-white/75 p-3 text-xs space-y-2">
+            <div className="font-bold text-amber-800">Zoom Continuo (Globo ↔ Mapa ↔ Isla)</div>
+            <p className="text-[11px] text-slate-700 leading-relaxed">
+              Usa la rueda del ratón o los botones <strong>+ / −</strong> en la esquina inferior
+              derecha para pasar sin cortes del <strong>Globo 3D</strong> al <strong>Mapa 2D</strong>{' '}
+              y entrar directamente al interior de cualquier isla.
             </p>
             <div className="flex flex-wrap gap-1.5 pt-1">
               <button
                 type="button"
-                onClick={() => {
-                  onChangeMapView('map');
-                  onFocusMyShip();
-                }}
-                className="rounded-lg bg-sky-500 px-2.5 py-1.5 text-[11px] font-black text-slate-950 cursor-pointer"
-              >
-                Abrir Mapa 2D
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  onChangeMapView('globe');
-                  onFocusMyShip();
-                }}
+                onClick={onFocusMyShip}
                 className="rounded-lg bg-[#f5b82e] px-2.5 py-1.5 text-[11px] font-black text-slate-950 cursor-pointer"
               >
                 Centrar en mi barco
@@ -1882,19 +1889,16 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
               <button
                 type="button"
                 onClick={onFocusWorldCenter}
-                className="rounded-lg border border-sky-400/50 bg-sky-500/15 px-2.5 py-1.5 text-[11px] font-bold text-sky-200 cursor-pointer"
+                className="rounded-lg border border-sky-300 bg-sky-50 px-2.5 py-1.5 text-[11px] font-bold text-sky-800 hover:bg-white cursor-pointer"
               >
                 Centro (0°, 0°)
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  onChangeMapView('globe');
-                  onFocusFullGlobe();
-                }}
-                className="rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-1.5 text-[11px] font-semibold text-slate-200 cursor-pointer"
+                onClick={onFocusFullGlobe}
+                className="rounded-lg border border-sky-200 bg-white/85 px-2.5 py-1.5 text-[11px] font-semibold text-slate-800 hover:bg-white cursor-pointer"
               >
-                Globo completo
+                Vista panorámica
               </button>
             </div>
           </div>
@@ -1902,7 +1906,7 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
           <button
             type="button"
             onClick={() => setActiveTab('misiones')}
-            className="w-full rounded-xl border border-amber-400/40 bg-amber-400/10 py-2 text-xs font-bold text-amber-200 hover:bg-amber-400/20 cursor-pointer"
+            className="w-full rounded-xl border border-amber-400/60 bg-amber-50/90 py-2 text-xs font-bold text-amber-800 hover:bg-amber-100 cursor-pointer"
           >
             Elegir isla destino para zarpar
           </button>
@@ -1916,21 +1920,21 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
             <button
               type="button"
               onClick={onToggleMute}
-              className="flex items-center justify-center gap-1.5 rounded-xl border border-[#1d3557] bg-[#101f37] py-2 text-xs font-bold text-slate-200 hover:border-amber-400 cursor-pointer"
+              className="flex items-center justify-center gap-1.5 rounded-xl border border-sky-200 bg-white/80 py-2 text-xs font-bold text-slate-800 hover:border-amber-500 hover:bg-white cursor-pointer"
             >
               {muted ? (
-                <VolumeX className="h-4 w-4 text-rose-400" />
+                <VolumeX className="h-4 w-4 text-rose-600" />
               ) : (
-                <Volume2 className="h-4 w-4 text-teal-300" />
+                <Volume2 className="h-4 w-4 text-teal-600" />
               )}
               <span>{muted ? 'Sonido off' : 'Sonido on'}</span>
             </button>
             <button
               type="button"
               onClick={onPause}
-              className="flex items-center justify-center gap-1.5 rounded-xl border border-[#1d3557] bg-[#101f37] py-2 text-xs font-bold text-slate-200 hover:border-amber-400 cursor-pointer"
+              className="flex items-center justify-center gap-1.5 rounded-xl border border-sky-200 bg-white/80 py-2 text-xs font-bold text-slate-800 hover:border-amber-500 hover:bg-white cursor-pointer"
             >
-              <Pause className="h-4 w-4 text-amber-300" />
+              <Pause className="h-4 w-4 text-amber-700" />
               <span>Pausar</span>
             </button>
           </div>
@@ -1939,24 +1943,24 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
             type="button"
             disabled={authBusy}
             onClick={onAuthAction}
-            className="w-full rounded-xl border border-[#1d3557] bg-[#101f37] px-3 py-2 text-xs font-bold text-slate-200 hover:border-amber-400 cursor-pointer text-left flex items-center justify-between gap-2"
+            className="w-full rounded-xl border border-sky-200 bg-white/80 px-3 py-2 text-xs font-bold text-slate-800 hover:border-amber-500 hover:bg-white cursor-pointer text-left flex items-center justify-between gap-2"
           >
             <span className="truncate">
               {user
                 ? `Google: ${user.email || user.displayName}`
                 : 'Conectar Google para guardar progreso'}
             </span>
-            <span className="text-amber-300 font-black shrink-0">
+            <span className="text-amber-700 font-black shrink-0">
               {user ? 'Salir' : 'Conectar'}
             </span>
           </button>
 
-          <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-800">
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-sky-200/80">
             <div className="flex items-center gap-1.5">
               <button
                 type="button"
                 onClick={() => onEditCharacter(pirate)}
-                className="flex items-center gap-1 rounded-xl border border-teal-400/45 bg-teal-950/45 px-3 py-1.5 text-xs font-bold text-teal-200 hover:bg-teal-900/60 cursor-pointer"
+                className="flex items-center gap-1 rounded-xl border border-teal-500/45 bg-teal-50/90 px-3 py-1.5 text-xs font-bold text-teal-800 hover:bg-teal-100 cursor-pointer"
               >
                 <Edit3 className="h-3.5 w-3.5" />
                 <span>Editar ficha</span>
@@ -1964,7 +1968,7 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
               <button
                 type="button"
                 onClick={onBackToMenu}
-                className="flex items-center gap-1 rounded-xl border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-bold text-slate-200 hover:bg-slate-800 cursor-pointer"
+                className="flex items-center gap-1 rounded-xl border border-sky-200 bg-white/85 px-3 py-1.5 text-xs font-bold text-slate-800 hover:bg-white cursor-pointer"
               >
                 <ArrowLeft className="h-3.5 w-3.5" />
                 <span>Menú</span>
@@ -1983,7 +1987,7 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                 <button
                   type="button"
                   onClick={() => setConfirmDelete(false)}
-                  className="rounded-xl border border-slate-700 px-2 py-1.5 text-xs text-slate-300 cursor-pointer"
+                  className="rounded-xl border border-sky-200 bg-white px-2 py-1.5 text-xs text-slate-700 cursor-pointer"
                 >
                   Cancelar
                 </button>
@@ -1992,7 +1996,7 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
               <button
                 type="button"
                 onClick={() => setConfirmDelete(true)}
-                className="flex items-center gap-1 rounded-xl border border-rose-500/40 bg-rose-950/30 px-3 py-1.5 text-xs font-bold text-rose-300 hover:bg-rose-900/50 cursor-pointer"
+                className="flex items-center gap-1 rounded-xl border border-rose-300 bg-rose-50/85 px-3 py-1.5 text-xs font-bold text-rose-700 hover:bg-rose-100 cursor-pointer"
               >
                 <Trash2 className="h-3.5 w-3.5" />
                 <span>Borrar</span>
@@ -2008,14 +2012,18 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
     <div className="pointer-events-none fixed inset-0 z-20">
       {/* Full-Viewport Seamless Island Interior Backdrop */}
       {showIslandViewport && (
-        <div className="pointer-events-auto absolute inset-0 z-0">
+        <div
+          data-testid="island-viewport-layer"
+          className="pointer-events-auto absolute inset-0 z-0 transition-opacity duration-200"
+        >
           <IslandSceneView
-            island={currIsland}
+            island={stageIsland}
             pirate={pirate}
             day={day}
             minuteOfDay={minuteOfDay}
             sidePanelOpen={characterSideOpen}
-            sameIslandPeers={sameIslandPeers}
+            isPlayerDockedHere={isPlayerDockedHere}
+            sameIslandPeers={isPlayerDockedHere ? sameIslandPeers : []}
             onMoveToSpot={(zone) => onMoveInIsland(pirate.id, zone)}
             onSelectSpotMission={(_, missionId) => {
               onRunMission(pirate.id, missionId);
@@ -2027,13 +2035,19 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
               onChallengeMiniBoss(pirate.id, miniBossId);
             }}
             onCoatShipBubble={() => onCoatShipBubble(pirate.id)}
+            onZoomOutToMap={onZoomOutToMap}
+            onSailToInspectedIsland={(destId) => onStartVoyage(pirate.id, destId)}
+            onFocusMyShip={onFocusMyShip}
           />
         </div>
       )}
 
       {/* Full-Viewport Interactive 2D World Zoom Map */}
       {showFlatMap && (
-        <div className="pointer-events-auto absolute inset-0 z-10">
+        <div
+          data-testid="map-viewport-layer"
+          className="pointer-events-auto absolute inset-0 z-10 transition-opacity duration-200"
+        >
           <WorldMapCanvas
             islands={allIslands}
             pirates={allPirates}
@@ -2058,6 +2072,7 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
               onSelectRoamingNpc?.(npcId);
             }}
             onZoomOutToGlobe={onZoomOutToGlobe}
+            onZoomInToIsland={onZoomInToIsland}
             onSailToIsland={(islId) => onStartVoyage(pirate.id, islId)}
             onGoToSabaody={() => {
               onStartVoyage(pirate.id, 'archipielago-sabaody');
@@ -2069,86 +2084,35 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
       {/* Top Floating HUD Bar */}
       <div className="pointer-events-none fixed inset-x-0 top-0 z-30 flex items-start justify-between gap-2 p-2.5 sm:p-3.5">
         {/* Left Compact Brand + Badge + Day/Clock */}
-        <div className="pointer-events-auto flex items-center gap-2.5 rounded-xl border border-[#22395d] bg-[#0c172a] px-3 py-1.5 shadow-xl">
+        <div className="pointer-events-auto flex items-center gap-2.5 rounded-xl border border-white/80 bg-white/82 backdrop-blur-sm px-3 py-1.5 shadow-[0_10px_28px_rgba(15,23,42,0.14)]">
           <button
             type="button"
             onClick={onBackToMenu}
             aria-label="Volver al menú de personajes"
-            className="flex items-center gap-1.5 text-left hover:opacity-90 cursor-pointer"
+            className="flex items-center gap-1.5 text-left hover:opacity-85 cursor-pointer"
           >
-            <span className="flex h-7 w-7 items-center justify-center rounded-md border border-slate-600 bg-slate-900 font-display text-[10px] font-black text-amber-300">
+            <span className="flex h-7 w-7 items-center justify-center rounded-md border border-amber-400/60 bg-amber-100/90 font-display text-[10px] font-black text-amber-800">
               VO
             </span>
-            <span className="hidden sm:inline font-display text-xs font-black tracking-wide text-white leading-tight">
+            <span className="hidden sm:inline font-display text-xs font-black tracking-wide text-slate-900 leading-tight">
               VIVID OCEAN
             </span>
           </button>
 
-          <span className="rounded-full bg-[#eab308]/20 border border-[#eab308]/60 px-2.5 py-0.5 font-mono-num text-xs font-black text-[#facc15] whitespace-nowrap">
+          <span className="rounded-full bg-amber-400/25 border border-amber-500/55 px-2.5 py-0.5 font-mono-num text-xs font-black text-amber-800 whitespace-nowrap">
             {formatShortBounty(pirate.bounty)}
           </span>
 
-          <div className="border-l border-slate-700/80 pl-2.5 font-mono-num text-[11px] leading-tight text-slate-300 whitespace-nowrap">
+          <div className="border-l border-sky-200 pl-2.5 font-mono-num text-[11px] leading-tight text-slate-600 whitespace-nowrap">
             <div>
               Sem {weekInfo.week} · D{weekInfo.dayOfWeek}/7
             </div>
-            <div className="font-bold text-white">{formatClock(minuteOfDay)}</div>
+            <div className="font-bold text-slate-900">{formatClock(minuteOfDay)}</div>
           </div>
         </div>
 
-        {/* Right Action Cluster: 3-Mode View Switcher + Audio + Google G */}
+        {/* Right Action Cluster: Audio + Google G */}
         <div className="pointer-events-auto flex items-center gap-1.5">
-          <div className="flex items-center rounded-xl border border-[#22395d] bg-[#0c172a] p-0.5 shadow-lg">
-            <button
-              type="button"
-              data-testid="view-island-btn"
-              disabled={Boolean(pirate.sailingToIslandId)}
-              onClick={() => {
-                onChangeMapView('island');
-                if (activeTab === 'mapa') setActiveTab('estado');
-              }}
-              className={`flex items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] font-bold cursor-pointer whitespace-nowrap disabled:opacity-45 ${
-                showIslandViewport
-                  ? 'bg-amber-400 text-slate-950'
-                  : 'text-slate-200 hover:text-amber-300'
-              }`}
-            >
-              <Anchor className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Isla</span>
-            </button>
-            <button
-              type="button"
-              data-testid="toggle-map-view-btn"
-              onClick={() => {
-                onChangeMapView('map');
-                onFocusMyShip();
-              }}
-              className={`flex items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] font-bold cursor-pointer whitespace-nowrap ${
-                showFlatMap
-                  ? 'bg-sky-400 text-slate-950'
-                  : 'text-slate-200 hover:text-sky-300'
-              }`}
-            >
-              <MapIcon className="h-3.5 w-3.5" />
-              <span>Mapa 2D</span>
-            </button>
-            <button
-              type="button"
-              data-testid="view-globe-btn"
-              onClick={() => {
-                onChangeMapView('globe');
-                onFocusMyShip();
-              }}
-              className={`flex items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] font-bold cursor-pointer whitespace-nowrap ${
-                showGlobeViewport
-                  ? 'bg-indigo-400 text-slate-950'
-                  : 'text-slate-200 hover:text-indigo-300'
-              }`}
-            >
-              <Globe className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Globo 3D</span>
-            </button>
-          </div>
 
           <button
             type="button"
@@ -2158,9 +2122,9 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
               onToggleMute();
             }}
             aria-label={muted ? 'Activar sonido [M]' : 'Silenciar sonido [M]'}
-            className="hidden sm:flex h-9 w-9 items-center justify-center rounded-xl border border-[#22395d] bg-[#0c172a] text-slate-200 hover:border-amber-400 cursor-pointer shadow-lg"
+            className="hidden sm:flex h-9 w-9 items-center justify-center rounded-xl border border-white/80 bg-white/82 backdrop-blur-sm text-slate-700 hover:border-amber-500 hover:bg-white cursor-pointer shadow-[0_10px_28px_rgba(15,23,42,0.14)]"
           >
-            {muted ? <VolumeX className="h-4 w-4 text-rose-400" /> : <Volume2 className="h-4 w-4" />}
+            {muted ? <VolumeX className="h-4 w-4 text-rose-600" /> : <Volume2 className="h-4 w-4" />}
           </button>
 
           <button
@@ -2192,21 +2156,21 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
       {/* Sailing Progress Overlay when sailing on 3D Globe or 2D Map */}
       {destIsland && (
         <div
-          className={`pointer-events-auto fixed bottom-16 md:bottom-4 right-4 z-30 w-[90%] max-w-sm rounded-xl border border-amber-400/50 bg-[#081221] px-3.5 py-2 shadow-xl ${
+          className={`pointer-events-auto fixed bottom-16 md:bottom-4 right-4 z-30 w-[90%] max-w-sm rounded-xl border border-amber-400/70 bg-white/86 backdrop-blur-sm px-3.5 py-2 shadow-[0_14px_38px_rgba(15,23,42,0.16)] ${
             characterSideOpen ? 'md:left-[445px] md:right-auto' : 'md:left-[88px] md:right-auto'
           }`}
         >
-          <div className="flex items-center justify-between text-xs font-bold text-amber-200">
+          <div className="flex items-center justify-between text-xs font-bold text-amber-800">
             <span className="flex items-center gap-1.5 truncate">
-              <Compass className="h-3.5 w-3.5 text-amber-300 shrink-0" />
+              <Compass className="h-3.5 w-3.5 text-amber-700 shrink-0" />
               Rumbo a {destIsland.name} ({destIsland.sea})
             </span>
-            <span className="font-mono-num text-white ml-2 shrink-0">
+            <span className="font-mono-num text-slate-900 ml-2 shrink-0">
               {Math.min(100, Math.round(pirate.sailProgress * 100))}% · ~
               {formatVoyageEta(estimateRemainingVoyageSec(pirate, allIslands))}
             </span>
           </div>
-          <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+          <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-sky-200/80">
             <div
               className="h-full rounded-full bg-[#f5b82e] transition-all"
               style={{ width: `${Math.min(100, Math.round(pirate.sailProgress * 100))}%` }}
@@ -2218,21 +2182,21 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
       {/* Red Dot Filters & Ship-Only Travelers Toolbar (visible in Mapa 2D & Globo 3D) */}
       {(showFlatMap || showGlobeViewport) && (
         <div className="pointer-events-none fixed right-3 top-[60px] z-30 flex flex-col items-end gap-2">
-          <div className="pointer-events-auto flex items-center gap-1.5 rounded-xl border border-[#22395d] bg-[#0a1426] px-2.5 py-1.5 shadow-xl">
+          <div className="pointer-events-auto flex items-center gap-1.5 rounded-xl border border-white/80 bg-white/84 backdrop-blur-sm px-2.5 py-1.5 shadow-[0_10px_28px_rgba(15,23,42,0.14)]">
             <button
               type="button"
               data-testid="red-dot-filter-toggle"
               aria-expanded={filterPanelOpen}
               onClick={() => setFilterPanelOpen((v) => !v)}
-              className="flex items-center gap-1.5 text-[11px] font-bold text-slate-100 hover:text-amber-300 cursor-pointer"
+              className="flex items-center gap-1.5 text-[11px] font-bold text-slate-900 hover:text-amber-700 cursor-pointer"
             >
-              <span className="h-2.5 w-2.5 rounded-sm bg-[#ef4444] border border-amber-300/70 shrink-0" />
-              <Filter className="h-3.5 w-3.5 text-amber-300 shrink-0" />
+              <span className="h-2.5 w-2.5 rounded-sm bg-[#ef4444] border border-amber-500/80 shrink-0" />
+              <Filter className="h-3.5 w-3.5 text-amber-700 shrink-0" />
               <span data-testid="red-dot-count-badge" className="font-mono-num">
                 Puntos: {dotSummary.visible}/{dotSummary.totalMatching}
               </span>
               {redDotFilters.length > 0 && (
-                <span className="rounded bg-amber-400 px-1.5 py-0.5 text-[10px] font-black text-slate-950">
+                <span className="rounded bg-[#f5b82e] px-1.5 py-0.5 text-[10px] font-black text-slate-950">
                   {redDotFilters.length}
                 </span>
               )}
@@ -2242,7 +2206,7 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                 type="button"
                 data-testid="red-dot-clear-btn"
                 onClick={() => onChangeRedDotFilters([])}
-                className="rounded-lg border border-slate-700 bg-[#101f37] px-2 py-0.5 text-[10px] font-bold text-slate-300 hover:border-amber-400 hover:text-white cursor-pointer"
+                className="rounded-lg border border-sky-200 bg-sky-50 px-2 py-0.5 text-[10px] font-bold text-slate-700 hover:border-amber-500 hover:text-slate-950 cursor-pointer"
               >
                 Limpiar
               </button>
@@ -2252,14 +2216,16 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
           {filterPanelOpen && (
             <div
               data-testid="red-dot-filter-panel"
-              className="pointer-events-auto w-[336px] sm:w-[374px] max-h-[68vh] overflow-y-auto nautical-scroll rounded-2xl border border-[#22395d] bg-[#0a1426] p-3 text-slate-100 shadow-2xl space-y-3"
+              className={`pointer-events-auto w-[340px] sm:w-[376px] ${
+                selectedRoamingNpc ? 'max-h-[calc(100vh-295px)]' : 'max-h-[calc(100vh-145px)]'
+              } overflow-y-auto nautical-scroll rounded-2xl border border-white/85 bg-white/86 backdrop-blur-md p-3 text-slate-900 shadow-[0_20px_50px_rgba(15,23,42,0.2)] space-y-2.5`}
             >
-              <div className="flex items-center justify-between gap-2 border-b border-slate-800 pb-2">
+              <div className="flex items-center justify-between gap-2 border-b border-sky-200/80 pb-2">
                 <div>
-                  <div className="text-xs font-black text-amber-300">
+                  <div className="text-xs font-black text-amber-800">
                     Filtros de Puntos Rojos
                   </div>
-                  <div className="text-[10px] text-slate-400">
+                  <div className="text-[10px] text-slate-600">
                     Máx. {MAX_IMPORTANT_RED_DOTS} importantes en pantalla ({dotSummary.visible} de {dotSummary.totalMatching})
                   </div>
                 </div>
@@ -2267,7 +2233,7 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                   type="button"
                   onClick={() => setFilterPanelOpen(false)}
                   aria-label="Cerrar filtros"
-                  className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-700 text-slate-300 hover:text-white cursor-pointer"
+                  className="flex h-7 w-7 items-center justify-center rounded-lg border border-sky-200 bg-white/85 text-slate-600 hover:text-slate-950 cursor-pointer"
                 >
                   <X className="h-3.5 w-3.5" />
                 </button>
@@ -2275,7 +2241,7 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
 
               {/* Level Multi-Select Chips */}
               <div className="space-y-1.5">
-                <div className="text-[10px] font-black uppercase tracking-wider text-slate-400">
+                <div className="text-[10px] font-black uppercase tracking-wider text-slate-600">
                   Por Nivel (Multi-selección)
                 </div>
                 <div className="grid grid-cols-3 gap-1.5">
@@ -2290,8 +2256,8 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                         onClick={() => toggleRedDotFilter(opt.id)}
                         className={`rounded-lg border px-2 py-1.5 text-[10px] font-bold transition-colors cursor-pointer ${
                           active
-                            ? 'border-amber-300 bg-amber-400 text-slate-950 font-black'
-                            : 'border-slate-700 bg-[#101f37] text-slate-200 hover:border-amber-400/60'
+                            ? 'border-amber-600 bg-[#f5b82e] text-slate-950 font-black'
+                            : 'border-sky-200 bg-sky-50/85 text-slate-800 hover:border-amber-500 hover:bg-white'
                         }`}
                       >
                         {opt.shortLabel}
@@ -2303,7 +2269,7 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
 
               {/* Category Multi-Select Chips */}
               <div className="space-y-1.5">
-                <div className="text-[10px] font-black uppercase tracking-wider text-slate-400">
+                <div className="text-[10px] font-black uppercase tracking-wider text-slate-600">
                   Por Categoría (Multi-selección)
                 </div>
                 <div className="flex flex-wrap gap-1.5">
@@ -2318,8 +2284,8 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                         onClick={() => toggleRedDotFilter(opt.id)}
                         className={`rounded-lg border px-2.5 py-1.5 text-[10px] font-bold transition-colors cursor-pointer ${
                           active
-                            ? 'border-sky-300 bg-sky-400 text-slate-950 font-black'
-                            : 'border-slate-700 bg-[#101f37] text-slate-200 hover:border-sky-400/60'
+                            ? 'border-sky-700 bg-sky-600 text-white font-black'
+                            : 'border-sky-200 bg-sky-50/85 text-slate-800 hover:border-sky-500 hover:bg-white'
                         }`}
                       >
                         {opt.label}
@@ -2330,8 +2296,8 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
               </div>
 
               {/* Ship-Only Traveling NPCs */}
-              <div className="space-y-1.5 border-t border-slate-800 pt-2.5">
-                <div className="flex items-center justify-between text-[10px] font-black uppercase tracking-wider text-teal-300">
+              <div className="space-y-1.5 border-t border-sky-200/80 pt-2.5">
+                <div className="flex items-center justify-between text-[10px] font-black uppercase tracking-wider text-teal-700">
                   <span className="flex items-center gap-1">
                     <Ship className="h-3.5 w-3.5" />
                     Viajeros en Barco ({activeRoamingNpcs.length} activos)
@@ -2344,23 +2310,23 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                       data-testid={`roaming-row-${npc.def.id}`}
                       className={`flex items-center justify-between gap-2 rounded-lg border px-2 py-1.5 ${
                         npc.def.isSpecialEvent
-                          ? 'border-amber-400/55 bg-amber-950/25'
-                          : 'border-slate-700/80 bg-[#101f37]'
+                          ? 'border-amber-300 bg-amber-50/90'
+                          : 'border-sky-200 bg-sky-50/75'
                       }`}
                     >
                       <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-1.5 text-[11px] font-black text-white truncate">
+                        <div className="flex items-center gap-1.5 text-[11px] font-black text-slate-900 truncate">
                           <span className="truncate">{npc.def.name}</span>
-                          <span className="rounded bg-slate-800 px-1 py-0.5 text-[9px] font-mono-num text-amber-300 shrink-0">
+                          <span className="rounded bg-white border border-sky-200 px-1 py-0.5 text-[9px] font-mono-num text-amber-800 shrink-0">
                             Nv {npc.def.level}
                           </span>
                           {npc.remainingWindowMinutes !== null && (
-                            <span className="rounded bg-amber-400/20 px-1 py-0.5 text-[9px] font-bold text-amber-200 shrink-0">
+                            <span className="rounded bg-amber-200/80 px-1 py-0.5 text-[9px] font-bold text-amber-900 shrink-0">
                               {npc.remainingWindowMinutes}m
                             </span>
                           )}
                         </div>
-                        <div className="truncate text-[9px] text-slate-400">
+                        <div className="truncate text-[9px] text-slate-600">
                           {npc.def.shipName} · {npc.fromIsland.name} → {npc.toIsland.name}
                         </div>
                       </div>
@@ -2370,8 +2336,9 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                         onClick={() => {
                           onSelectRoamingNpc?.(npc.def.id);
                           onFocusLatLon?.(npc.lat, npc.lon, 4.5, 9.0);
+                          setFilterPanelOpen(false);
                         }}
-                        className="flex items-center gap-1 rounded-md bg-sky-500 px-2 py-1 text-[10px] font-black text-slate-950 hover:bg-sky-400 cursor-pointer shrink-0"
+                        className="flex items-center gap-1 rounded-md bg-sky-600 px-2 py-1 text-[10px] font-black text-white hover:bg-sky-500 cursor-pointer shrink-0"
                       >
                         <LocateFixed className="h-3 w-3" />
                         <span>Ver</span>
@@ -2381,8 +2348,8 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                 </div>
 
                 {/* Timed 15m/h Legend Schedules (Shanks, Mihawk, Rayleigh, Teach) */}
-                <div className="rounded-lg border border-slate-800 bg-[#07101f] p-2 space-y-1">
-                  <div className="flex items-center gap-1 text-[9px] font-black uppercase tracking-wider text-amber-300">
+                <div className="rounded-lg border border-sky-200 bg-sky-50/75 p-2 space-y-1">
+                  <div className="flex items-center gap-1 text-[9px] font-black uppercase tracking-wider text-amber-800">
                     <Clock className="h-3 w-3" />
                     <span>Horarios Especiales (15 min / hora)</span>
                   </div>
@@ -2394,12 +2361,12 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                         data-testid={`schedule-${def.id}`}
                         className="flex items-center justify-between gap-2 text-[10px]"
                       >
-                        <span className={win.active ? 'font-bold text-amber-200' : 'text-slate-400'}>
+                        <span className={win.active ? 'font-bold text-amber-800' : 'text-slate-600'}>
                           {def.name} ({def.shipName})
                         </span>
                         <span
                           className={`font-mono-num text-[9px] shrink-0 ${
-                            win.active ? 'font-black text-emerald-300' : 'text-slate-500'
+                            win.active ? 'font-black text-emerald-700' : 'text-slate-500'
                           }`}
                         >
                           {win.active ? `ACTIVO (${win.remainingMinutes}m)` : formatRoamingScheduleLabel(def)}
@@ -2418,16 +2385,16 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
       {(showFlatMap || showGlobeViewport) && selectedRoamingNpc && (
         <div
           data-testid="roaming-npc-card"
-          className="pointer-events-auto fixed bottom-20 md:bottom-16 right-3 z-30 w-80 rounded-2xl border border-amber-400/60 bg-[#081427] p-3.5 text-slate-100 shadow-2xl"
+          className="pointer-events-auto fixed bottom-20 md:bottom-16 right-3 z-30 w-80 rounded-2xl border border-amber-300 bg-white/86 backdrop-blur-md p-3.5 text-slate-900 shadow-[0_18px_48px_rgba(15,23,42,0.18)]"
         >
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
-              <div className="text-[10px] font-black uppercase tracking-wider text-amber-300">
+              <div className="text-[10px] font-black uppercase tracking-wider text-amber-800">
                 {selectedRoamingNpc.def.isSpecialEvent
                   ? 'Evento Especial · Solo en Barco'
                   : 'Viajero Marítimo · Solo en Barco'}
               </div>
-              <h3 className="font-display text-sm font-black text-white truncate">
+              <h3 className="font-display text-sm font-black text-slate-900 truncate">
                 {selectedRoamingNpc.def.name} · «{selectedRoamingNpc.def.epithet}»
               </h3>
             </div>
@@ -2435,28 +2402,28 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
               type="button"
               onClick={() => onSelectRoamingNpc?.(null)}
               aria-label="Cerrar ficha de barco"
-              className="flex h-6 w-6 items-center justify-center rounded-md border border-slate-700 text-slate-300 hover:text-white cursor-pointer shrink-0"
+              className="flex h-6 w-6 items-center justify-center rounded-md border border-sky-200 bg-white/85 text-slate-600 hover:text-slate-950 cursor-pointer shrink-0"
             >
               <X className="h-3.5 w-3.5" />
             </button>
           </div>
-          <div className="mt-2 space-y-1 text-[11px] text-slate-300">
+          <div className="mt-2 space-y-1 text-[11px] text-slate-700">
             <div className="flex items-center justify-between">
-              <span>Navío: <strong className="text-white">{selectedRoamingNpc.def.shipName}</strong></span>
-              <span className="font-mono-num font-black text-amber-300">
+              <span>Navío: <strong className="text-slate-900">{selectedRoamingNpc.def.shipName}</strong></span>
+              <span className="font-mono-num font-black text-amber-800">
                 Nv {selectedRoamingNpc.def.level}
               </span>
             </div>
             <div>
-              Ruta actual: <strong className="text-sky-300">{selectedRoamingNpc.fromIsland.name}</strong> →{' '}
-              <strong className="text-sky-300">{selectedRoamingNpc.toIsland.name}</strong>
+              Ruta actual: <strong className="text-sky-700">{selectedRoamingNpc.fromIsland.name}</strong> →{' '}
+              <strong className="text-sky-700">{selectedRoamingNpc.toIsland.name}</strong>
             </div>
             <div className="flex items-center justify-between text-[10px]">
-              <span className="text-slate-400">
+              <span className="text-slate-600">
                 {formatRoamingScheduleLabel(selectedRoamingNpc.def)}
               </span>
               {selectedRoamingNpc.def.bounty > 0 && (
-                <span className="font-mono-num font-bold text-[#f5b82e]">
+                <span className="font-mono-num font-bold text-amber-800">
                   {formatBounty(selectedRoamingNpc.def.bounty)}
                 </span>
               )}
@@ -2468,7 +2435,7 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
               onClick={() =>
                 onFocusLatLon?.(selectedRoamingNpc.lat, selectedRoamingNpc.lon, 5.2, 8.2)
               }
-              className="flex items-center gap-1 rounded-lg bg-amber-400 px-2.5 py-1.5 text-[11px] font-black text-slate-950 hover:bg-amber-300 cursor-pointer"
+              className="flex items-center gap-1 rounded-lg bg-[#f5b82e] px-2.5 py-1.5 text-[11px] font-black text-slate-950 hover:bg-amber-300 cursor-pointer"
             >
               <LocateFixed className="h-3.5 w-3.5" />
               <span>Seguir navío</span>
@@ -2481,16 +2448,16 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
         <div
           role="alert"
           data-testid="voyage-notice-banner"
-          className="pointer-events-auto fixed right-3 top-28 z-40 flex max-w-sm items-start gap-2 rounded-xl border border-cyan-400/60 bg-[#081529] px-3.5 py-2.5 text-xs font-semibold text-cyan-100 shadow-2xl"
+          className="pointer-events-auto fixed right-3 top-28 z-40 flex max-w-sm items-start gap-2 rounded-xl border border-cyan-300 bg-white/88 backdrop-blur-md px-3.5 py-2.5 text-xs font-semibold text-cyan-900 shadow-[0_14px_38px_rgba(15,23,42,0.18)]"
         >
-          <Sparkles className="h-4 w-4 text-cyan-300 shrink-0 mt-0.5" />
+          <Sparkles className="h-4 w-4 text-cyan-700 shrink-0 mt-0.5" />
           <span className="flex-1 leading-snug">{voyageNotice}</span>
           {onClearVoyageNotice && (
             <button
               type="button"
               onClick={onClearVoyageNotice}
               aria-label="Cerrar aviso"
-              className="text-slate-400 hover:text-white cursor-pointer"
+              className="text-slate-500 hover:text-slate-950 cursor-pointer"
             >
               <X className="h-3.5 w-3.5" />
             </button>
@@ -2501,7 +2468,7 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
       {authNotice && (
         <div
           role="status"
-          className="pointer-events-auto fixed right-3 top-40 z-30 max-w-xs rounded-lg border border-amber-400/50 bg-[#081221] px-3 py-1.5 text-[11px] text-amber-200 shadow-lg"
+          className="pointer-events-auto fixed right-3 top-40 z-30 max-w-xs rounded-lg border border-amber-300 bg-white/88 backdrop-blur-md px-3 py-1.5 text-[11px] text-amber-900 shadow-lg"
         >
           {authNotice}
         </div>
@@ -2512,7 +2479,7 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
         {/* Vertical Tab Rail */}
         <nav
           aria-label="Secciones del personaje"
-          className="pointer-events-auto flex w-[62px] shrink-0 flex-col items-center justify-between rounded-2xl border border-[#22395d] bg-[#0a1426]/95 py-2 px-1 shadow-2xl"
+          className="pointer-events-auto flex w-[62px] shrink-0 flex-col items-center justify-between rounded-2xl border border-white/80 bg-white/82 backdrop-blur-md py-2 px-1 shadow-[0_14px_38px_rgba(15,23,42,0.16)]"
         >
           <button
             type="button"
@@ -2520,7 +2487,7 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
             onClick={() => onChangeCharacterSideOpen(!characterSideOpen)}
             title={characterSideOpen ? 'Contraer panel' : 'Desplegar panel de personaje'}
             aria-label={characterSideOpen ? 'Contraer panel' : 'Desplegar panel'}
-            className="flex h-8 w-11 items-center justify-center rounded-lg border border-slate-700/80 bg-[#101f37] text-amber-300 hover:border-amber-400 cursor-pointer mb-1"
+            className="flex h-8 w-11 items-center justify-center rounded-lg border border-sky-200 bg-sky-50/90 text-amber-700 hover:border-amber-500 hover:bg-white cursor-pointer mb-1"
           >
             {characterSideOpen ? (
               <PanelLeftClose className="h-4 w-4" />
@@ -2541,8 +2508,8 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                   onClick={() => handleTabSelect(tab.id)}
                   className={`relative flex w-full flex-col items-center justify-center gap-0.5 rounded-xl py-2 px-0.5 transition-colors cursor-pointer ${
                     isSelected
-                      ? 'bg-[#f5b82e]/18 text-[#f5b82e] border border-[#f5b82e]/50'
-                      : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-100 border border-transparent'
+                      ? 'bg-[#f5b82e]/30 text-amber-900 border border-amber-500/60'
+                      : 'text-slate-600 hover:bg-sky-50 hover:text-slate-950 border border-transparent'
                   }`}
                 >
                   <div className="relative">
@@ -2561,8 +2528,8 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
             })}
           </div>
 
-          <div className="pt-1 border-t border-slate-800/80 w-full flex flex-col items-center">
-            <span className="font-mono-num text-[9px] font-bold text-emerald-300 flex items-center gap-0.5">
+          <div className="pt-1 border-t border-sky-200/80 w-full flex flex-col items-center">
+            <span className="font-mono-num text-[9px] font-bold text-emerald-700 flex items-center gap-0.5">
               <Coins className="h-2.5 w-2.5" />
               {pirate.berries}
             </span>
@@ -2574,7 +2541,7 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
           <section
             data-testid="character-side-panel"
             aria-label={`Panel lateral de ${pirate.name}`}
-            className="pointer-events-auto flex w-[348px] lg:w-[366px] flex-col rounded-2xl border border-[#22395d] bg-[#0c172a]/95 text-slate-100 shadow-[0_12px_40px_rgba(0,0,0,0.72)] overflow-hidden"
+            className="pointer-events-auto flex w-[348px] lg:w-[366px] flex-col rounded-2xl border border-white/80 bg-white/80 backdrop-blur-md text-slate-900 shadow-[0_18px_48px_rgba(15,23,42,0.18)] overflow-hidden"
           >
             {renderPanelContent()}
           </section>
@@ -2587,7 +2554,7 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
           <section
             data-testid="character-mobile-panel"
             aria-label={`Panel de ${pirate.name}`}
-            className="pointer-events-auto mx-2 mb-1.5 flex max-h-[44vh] flex-col rounded-2xl border border-[#22395d] bg-[#0c172a]/95 text-slate-100 shadow-2xl overflow-hidden"
+            className="pointer-events-auto mx-2 mb-1.5 flex max-h-[44vh] flex-col rounded-2xl border border-white/80 bg-white/84 backdrop-blur-md text-slate-900 shadow-[0_18px_48px_rgba(15,23,42,0.18)] overflow-hidden"
           >
             {renderPanelContent()}
           </section>
@@ -2596,7 +2563,7 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
             <button
               type="button"
               onClick={() => onChangeCharacterSideOpen(true)}
-              className="flex items-center gap-1.5 rounded-full border border-[#22395d] bg-[#0c172a]/95 px-3 py-1 text-[11px] font-bold text-amber-300 shadow-lg cursor-pointer"
+              className="flex items-center gap-1.5 rounded-full border border-white/80 bg-white/86 backdrop-blur-sm px-3 py-1 text-[11px] font-bold text-amber-800 shadow-lg cursor-pointer"
             >
               <PanelLeftOpen className="h-3.5 w-3.5" />
               <span>Abrir {pirate.name}</span>
@@ -2606,7 +2573,7 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
 
         <nav
           aria-label="Navegación móvil del personaje"
-          className="pointer-events-auto grid grid-cols-7 border-t border-[#1d3254] bg-[#0a1426] px-1 py-1.5 shadow-2xl"
+          className="pointer-events-auto grid grid-cols-7 border-t border-white/80 bg-white/86 backdrop-blur-md px-1 py-1.5 shadow-[0_-8px_28px_rgba(15,23,42,0.12)]"
         >
           {navItems.map((tab) => {
             const active = characterSideOpen && activeTab === tab.id;
@@ -2619,8 +2586,8 @@ export const CharacterScreen: React.FC<CharacterScreenProps> = ({
                 onClick={() => handleTabSelect(tab.id)}
                 className={`relative flex flex-col items-center justify-center gap-0.5 rounded-lg py-1 transition-colors cursor-pointer ${
                   active
-                    ? 'text-[#f5b82e] bg-amber-400/10'
-                    : 'text-slate-400 hover:text-slate-200'
+                    ? 'text-amber-800 bg-amber-400/20 font-bold'
+                    : 'text-slate-600 hover:text-slate-950'
                 }`}
               >
                 <div className="relative">

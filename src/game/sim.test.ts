@@ -8,6 +8,7 @@ import {
   challengeMiniBoss,
   coatPirateShipWithBubble,
   compactPirateForStorage,
+  computeEvolvedRole,
   computePirateStats,
   computeTraitModifiers,
   computeWeatherDebuff,
@@ -28,6 +29,7 @@ import {
   getIslandWeather,
   getNavigationPathCoords,
   getPiratePositionXYZ,
+  getRoleEvolutionInfo,
   getWeekAndDay,
   hydratePirateFromStorage,
   latLonToXYZ,
@@ -44,6 +46,7 @@ import {
   updatePirateCrew,
   updatePirateProfile,
   validateCreatePirateInput,
+  xpForNextLevel,
 } from './sim';
 import {
   ACCESSORY_OPTIONS,
@@ -61,6 +64,7 @@ import {
   WEATHER_METADATA,
   getBossForIsland,
   getEquipmentItem,
+  getIslandMissions,
   getIslandRecommendedDays,
   getMiniBossesForIsland,
   getNextCycleColor,
@@ -87,6 +91,16 @@ import {
   isRoamingWindowActive,
 } from './roamingNpcs';
 import { getBotRoleLabel } from './sim';
+import {
+  GLOBE_TO_MAP_DIST,
+  ISLAND_TO_MAP_ZOOM,
+  MAP_TO_GLOBE_ZOOM,
+  MAP_TO_ISLAND_ZOOM,
+  evaluateGlobeZoomTransition,
+  evaluateIslandZoomTransition,
+  evaluateMapZoomTransition,
+  findNearestIslandForZoomEntry,
+} from './zoomContinuum';
 import type { RedDotFilterId } from './types';
 
 test('latLonToXYZ places coordinates accurately on the unit sphere', () => {
@@ -234,7 +248,6 @@ test('spawnPlayerPirate starts inside island with slow sail speed, manualMode fa
 
   const crewRes = updatePirateCrew(res.world, res.pirate.id, {
     crewName: 'Ejército del Alba',
-    role: 'Espadachín',
     flagColor: '#0d9488',
   });
   assert.equal(crewRes.pirate?.crewName, 'Ejército del Alba');
@@ -311,7 +324,6 @@ test('characters stay inside their island, manualMode stops autonomous actions, 
     name: 'Ace Editado',
     epithet: 'Espadachín Carmesí',
     faction: 'aventureros',
-    role: 'Espadachín',
     originSea: 'Mar del Sur',
     dream: 'Dominar los Siete Mares',
     physicalTraits: ['zancada_gigante'],
@@ -327,7 +339,7 @@ test('characters stay inside their island, manualMode stops autonomous actions, 
     accessory: 'scar',
   });
   assert.equal(editRes.pirate?.name, 'Ace Editado');
-  assert.equal(editRes.pirate?.role, 'Espadachín');
+  assert.ok(editRes.pirate?.role && editRes.pirate.role !== 'Grumete');
   assert.equal(editRes.pirate?.race, beforeRace);
   assert.equal(editRes.pirate?.hairStyle, beforeHairStyle);
   assert.equal(editRes.pirate?.hairColor, beforeHairColor);
@@ -928,7 +940,7 @@ test('compactPirateForStorage / hydratePirateFromStorage, compact BotPirate, and
     });
   }
   assert.ok(getSpriteRunCacheSize() <= MAX_SPRITE_RUN_CACHE);
-  assert.equal(MAX_ISLAND_ART_CACHE, 40);
+  assert.equal(MAX_ISLAND_ART_CACHE, 140);
 });
 
 test('red dot importance cap (24 max) and all 9 multi-select filters rank and filter accurately', () => {
@@ -1037,9 +1049,16 @@ test('ship-only roaming NPCs travel strictly on ships and Shanks appears 15 min 
     assert.equal(isRoamingWindowActive(shanks, ts).active, false, `Shanks must disappear outside 15m window (:${min})`);
     const list = getActiveRoamingShipNpcs(allIslands, ts);
     assert.equal(list.some((a) => a.def.id === 'roam-shanks'), false);
-    // At least one staggered legend (Mihawk / Rayleigh / Teach) + continuous ship NPCs remain active
+    // At least one staggered legend (Mihawk / Scopper Gaban / Teach) + continuous ship NPCs remain active
     assert.ok(list.some((a) => a.def.isSpecialEvent));
     assert.ok(list.some((a) => !a.def.isSpecialEvent));
+    for (const activeNpc of list) {
+      assert.notEqual(
+        activeNpc.fromIsland.id,
+        activeNpc.toIsland.id,
+        `${activeNpc.def.name} must always sail between distinct islands`
+      );
+    }
   }
 
   // Ship-only NPCs never spawn as stationary island-interior quest NPCs
@@ -1055,6 +1074,178 @@ test('ship-only roaming NPCs travel strictly on ships and Shanks appears 15 min 
     }
   }
 });
+
+test('zoomContinuum transitions seamlessly across Globe 3D <-> Mapa 2D <-> Isla with hysteresis', () => {
+  const allIslands = [...GRAND_LINE_ISLANDS, ...MINI_ISLANDS];
+  const wano = GRAND_LINE_ISLANDS.find((i) => i.id === 'pais-de-wano')!;
+
+  // 1) Globe -> Map when zooming in past GLOBE_TO_MAP_DIST
+  assert.equal(evaluateGlobeZoomTransition(7.5, true).nextStage, 'globe');
+  assert.equal(evaluateGlobeZoomTransition(GLOBE_TO_MAP_DIST - 0.1, false).nextStage, 'globe');
+  const toMap = evaluateGlobeZoomTransition(GLOBE_TO_MAP_DIST - 0.15, true);
+  assert.equal(toMap.nextStage, 'map');
+  assert.ok(toMap.mapEntryZoom > MAP_TO_GLOBE_ZOOM);
+
+  // 2) Map -> Globe when zooming out past MAP_TO_GLOBE_ZOOM
+  const mapStay = evaluateMapZoomTransition(1.2, 0.92, 'out', wano.lat, wano.lon, allIslands, wano.id);
+  assert.equal(mapStay.action, 'stay');
+  const mapToGlobe = evaluateMapZoomTransition(0.81, 0.72, 'out', wano.lat, wano.lon, allIslands, wano.id);
+  assert.equal(mapToGlobe.action, 'to_globe');
+  if (mapToGlobe.action === 'to_globe') {
+    assert.ok(mapToGlobe.globeDist > GLOBE_TO_MAP_DIST);
+  }
+
+  // 3) Map -> Island when zooming in past MAP_TO_ISLAND_ZOOM near an island
+  const mapToIsland = evaluateMapZoomTransition(
+    7.8,
+    MAP_TO_ISLAND_ZOOM + 0.4,
+    'in',
+    wano.lat + 1,
+    wano.lon - 1,
+    allIslands,
+    null
+  );
+  assert.equal(mapToIsland.action, 'to_island');
+  if (mapToIsland.action === 'to_island') {
+    assert.equal(mapToIsland.island.id, 'pais-de-wano');
+    assert.ok(mapToIsland.islandEntryZoom > ISLAND_TO_MAP_ZOOM);
+  }
+
+  // Open ocean far from any island stays on map instead of jumping randomly
+  const openOcean = evaluateMapZoomTransition(
+    8.5,
+    MAP_TO_ISLAND_ZOOM + 0.5,
+    'in',
+    -78,
+    170,
+    allIslands,
+    null
+  );
+  assert.equal(openOcean.action, 'stay');
+
+  // 4) Island -> Map when zooming out past ISLAND_TO_MAP_ZOOM
+  const islandStay = evaluateIslandZoomTransition(1.3, 1.05, 'out');
+  assert.equal(islandStay.action, 'stay');
+  const islandToMap = evaluateIslandZoomTransition(0.94, 0.85, 'out');
+  assert.equal(islandToMap.action, 'to_map');
+  if (islandToMap.action === 'to_map') {
+    assert.ok(islandToMap.mapEntryZoom < MAP_TO_ISLAND_ZOOM);
+  }
+
+  // 5) Nearest island respects dateline wrap-around
+  const nearestDateline = findNearestIslandForZoomEntry(3, -179, allIslands, null, 20);
+  assert.ok(nearestDateline !== null, 'Wrapped dateline search should find nearby Mary Geoise / Nuevo Marineford');
+});
+
+test('non-boss XP is very low so Day 2 autonomous characters reach around Level 4-5 while Bosses grant large XP', () => {
+  let world = createInitialWorld();
+  const spawn = spawnPlayerPirate(world, {
+    name: 'Coby Constante',
+    epithet: 'Aprendiz',
+    faction: 'marines',
+    originSea: 'Mar del Este',
+    dream: 'Crecer paso a paso.',
+    physicalTraits: ['resistente'],
+    mentalTraits: ['sangre_fria'],
+  });
+  world = spawn.world;
+  const pid = spawn.pirate.id;
+  const rng = createSeededRng(777);
+
+  // Verify non-boss missions on Dawn display and grant low XP compared to Boss
+  const dawn = world.islands.find((i) => i.id === 'isla-dawn')!;
+  const missions = getIslandMissions(dawn);
+  const trainMission = missions.find((m) => m.id === 'entrenar')!;
+  const exploreMission = missions.find((m) => m.id === 'explorar')!;
+  const bossMission = missions.find((m) => m.id === 'jefe')!;
+  assert.ok(trainMission.xpReward <= 3, `Expected low training XP, got ${trainMission.xpReward}`);
+  assert.ok(exploreMission.xpReward <= 3, `Expected low explore XP, got ${exploreMission.xpReward}`);
+  assert.ok(bossMission.xpReward >= 80, `Expected high boss XP, got ${bossMission.xpReward}`);
+  assert.ok(xpForNextLevel(1) >= 120);
+
+  // Simulate into late Day 2 (~9,200 real seconds => Day 2 evening)
+  for (let i = 0; i < 920; i++) {
+    world = stepSimulation(world, 10, rng, 1700000000000 + i * 10000).world;
+  }
+
+  const pDay2 = world.pirates.find((p) => p.id === pid)!;
+  assert.equal(world.day, 2, `Expected Day 2, got Day ${world.day}`);
+  assert.ok(
+    pDay2.level >= 3 && pDay2.level <= 5,
+    `Expected Day 2 non-boss level to stay <= 5 (around 3-5), got Level ${pDay2.level} with ${pDay2.xp} XP`
+  );
+});
+
+test('character crew role evolves automatically from stats, equipment, and actions without manual selection', () => {
+  const initial = createInitialWorld();
+
+  // 1) High Ingenio -> Navegante initially, evolving into Arqueólogo with ruins exploration
+  const witSpawn = spawnPlayerPirate(initial, {
+    name: 'Robin Sabia',
+    epithet: 'Erudita',
+    faction: 'aventureros',
+    originSea: 'Mar del Oeste',
+    dream: 'Leer los Poneglyphs',
+    physicalTraits: ['agil'],
+    mentalTraits: ['astuto', 'estratega'],
+  });
+  assert.equal(witSpawn.pirate.role, 'Navegante');
+
+  const afterExplore = runIslandMission(witSpawn.world, witSpawn.pirate.id, 'explorar', createSeededRng(3));
+  assert.equal(afterExplore.world.pirates[0].role, 'Arqueólogo');
+
+  // 2) High Fuerza -> Luchador bare-handed, evolving into Espadachín when equipping a blade
+  const strSpawn = spawnPlayerPirate(initial, {
+    name: 'Franky Puño',
+    epithet: 'Rompeacero',
+    faction: 'piratas',
+    originSea: 'Mar del Sur',
+    dream: 'Construir el mejor barco',
+    physicalTraits: ['fuerte', 'golpe_demoledor'],
+    mentalTraits: ['temerario'],
+  });
+  assert.equal(strSpawn.pirate.role, 'Luchador');
+
+  const withSwordInv = {
+    ...strSpawn.world,
+    pirates: strSpawn.world.pirates.map((p) => ({ ...p, inventory: ['eq_sable_bandido'] })),
+  };
+  const equippedRes = equipPirateItem(withSwordInv, strSpawn.pirate.id, 'eq_sable_bandido');
+  assert.equal(equippedRes.pirate?.role, 'Espadachín');
+
+  // 3) High Agilidad -> Ladrón
+  const agiSpawn = spawnPlayerPirate(initial, {
+    name: 'Nami Veloz',
+    epithet: 'Sombra Ágil',
+    faction: 'piratas',
+    originSea: 'Mar del Este',
+    dream: 'Trazar el mapa del mundo',
+    physicalTraits: ['rapido', 'zancada_gigante'],
+    mentalTraits: ['suerte_pirata'],
+  });
+  assert.equal(agiSpawn.pirate.role, 'Ladrón');
+
+  // 4) Balanced newcomer starts as Grumete and evolves with actions
+  const balancedSpawn = spawnPlayerPirate(initial, {
+    name: 'Koby Novato',
+    epithet: 'Grumete',
+    faction: 'marines',
+    originSea: 'Mar del Este',
+    dream: 'Servir en alta mar',
+    physicalTraits: ['fuerte'],
+    mentalTraits: ['astuto'],
+  });
+  assert.equal(balancedSpawn.pirate.role, 'Grumete');
+  let evoWorld = balancedSpawn.world;
+  for (let i = 0; i < 4; i++) {
+    evoWorld = runIslandMission(evoWorld, balancedSpawn.pirate.id, 'entrenar', createSeededRng(10 + i)).world;
+  }
+  assert.equal(computeEvolvedRole(evoWorld.pirates[0]), 'Luchador');
+  assert.equal(evoWorld.pirates[0].role, 'Luchador');
+  const evoInfo = getRoleEvolutionInfo(evoWorld.pirates[0]);
+  assert.equal(evoInfo.role, 'Luchador');
+});
+
 
 
 

@@ -7,10 +7,13 @@ import {
   Coins,
   Compass,
   Flame,
+  LocateFixed,
   Snowflake,
   Sun,
   Swords,
   Wind,
+  ZoomIn,
+  ZoomOut,
 } from 'lucide-react';
 import { computeWeatherDebuff, getCharacterSpriteScale, getRankInfo } from '../game/sim';
 import {
@@ -34,6 +37,10 @@ import type {
   PirateRace,
   WeatherType,
 } from '../game/types';
+import {
+  ISLAND_ENTRY_ZOOM,
+  evaluateIslandZoomTransition,
+} from '../game/zoomContinuum';
 import { PirateAvatarSvg } from './PirateAvatarSvg';
 
 interface IslandSceneViewProps {
@@ -42,12 +49,16 @@ interface IslandSceneViewProps {
   day?: number;
   minuteOfDay?: number;
   sidePanelOpen?: boolean;
+  isPlayerDockedHere?: boolean;
   sameIslandPeers: Pirate[];
   onSelectSpotMission: (zone: IslandZoneId, missionId: IslandMissionId) => void;
   onMoveToSpot: (zone: IslandZoneId) => void;
   onSelectNpcQuest?: (questId: string) => void;
   onChallengeMiniBoss?: (miniBossId: string) => void;
   onCoatShipBubble?: () => void;
+  onZoomOutToMap?: (island: Island) => void;
+  onSailToInspectedIsland?: (islandId: string) => void;
+  onFocusMyShip?: () => void;
 }
 
 interface ZoneCoord {
@@ -548,687 +559,1104 @@ const IslandBackdropSvg = React.memo<{ pal: BiomePalette }>(({ pal }) => (
   </svg>
 ));
 
+type InteriorSilhouetteKind =
+  | 'standard'
+  | 'crescent_harbor'
+  | 'ship_deck'
+  | 'abyss_ring'
+  | 'split_fire_ice'
+  | 'cloud_sky'
+  | 'sea_bridge'
+  | 'twin_islets'
+  | 'jagged_volcanic'
+  | 'snow_rockies';
+
+function getInteriorSilhouetteKind(island: Island): InteriorSilhouetteKind {
+  switch (island.id) {
+    case 'marineford':
+    case 'nuevo-marineford':
+    case 'mini-baterilla':
+      return 'crescent_harbor';
+    case 'thriller-bark':
+    case 'reino-germa':
+    case 'isla-barco-guerra':
+    case 'mini-baratie':
+      return 'ship_deck';
+    case 'enies-lobby':
+    case 'impel-down':
+    case 'mini-ilusia':
+      return 'abyss_ring';
+    case 'punk-hazard':
+      return 'split_fire_ice';
+    case 'skypiea':
+    case 'weatheria':
+    case 'merveille':
+    case 'isla-perdida':
+    case 'mini-isla-bruma':
+      return 'cloud_sky';
+    case 'tequila-wolf':
+    case 'mini-estacion-shift':
+      return 'sea_bridge';
+    case 'anillos-largos':
+    case 'archipielago-sabaody':
+    case 'islas-nanatsu':
+    case 'mini-bancos-coral':
+    case 'mini-isla-bigotes':
+      return 'twin_islets';
+    case 'onigashima':
+    case 'hachinosu':
+    case 'isla-raijin':
+    case 'isla-kuraigana':
+    case 'mini-atolones-azufre':
+      return 'jagged_volcanic';
+    case 'isla-drum':
+      return 'snow_rockies';
+    default:
+      return 'standard';
+  }
+}
+
+function hashInteriorId(id: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < id.length; i++) {
+    h ^= id.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
 const IslandStaticArtworkSvg = React.memo<{
   island: Island;
   coastExpand: number;
   pal: BiomePalette;
   trenchSubmerged: boolean;
-}>(({ island, coastExpand, pal, trenchSubmerged }) => (
-  <svg
-    className="pointer-events-none absolute inset-0 h-full w-full"
-    viewBox="0 0 360 180"
-    preserveAspectRatio="none"
-    shapeRendering="crispEdges"
-    style={{ imageRendering: 'pixelated' }}
-    aria-hidden="true"
-  >
-    {/* Stepped Pixel Reef & Sea Foam Coastline */}
-    <rect
-      x={12 - coastExpand}
-      y={10}
-      width={332 + coastExpand * 2}
-      height={158}
-      fill={pal.reef}
-      opacity="0.38"
-    />
-    <rect
-      x={4 - coastExpand}
-      y={26}
-      width={348 + coastExpand * 2}
-      height={126}
-      fill={pal.reef}
-      opacity="0.38"
-    />
-    <rect
-      x={16 - coastExpand}
-      y={14}
-      width={324 + coastExpand * 2}
-      height={150}
-      fill={pal.foam}
-      opacity="0.56"
-    />
-    <rect
-      x={8 - coastExpand}
-      y={30}
-      width={340 + coastExpand * 2}
-      height={118}
-      fill={pal.foam}
-      opacity="0.56"
-    />
+}>(({ island, coastExpand, pal, trenchSubmerged }) => {
+  const kind = getInteriorSilhouetteKind(island);
+  const seed = hashInteriorId(island.id);
+  const effectiveTurf =
+    island.id === 'isla-drum'
+      ? '#e2e8f0'
+      : island.id === 'baltigo'
+      ? '#d6d3d1'
+      : pal.turf;
+  const effectiveTurfLight =
+    island.id === 'isla-drum'
+      ? '#f8fafc'
+      : island.id === 'baltigo'
+      ? '#e7e5e4'
+      : pal.turfLight;
+  const effectiveTurfDark =
+    island.id === 'isla-drum'
+      ? '#cbd5e1'
+      : island.id === 'baltigo'
+      ? '#a8a29e'
+      : pal.turfDark;
 
-    {/* Southern Cliff Depth Shadow */}
-    <rect
-      x={18 - coastExpand}
-      y={22}
-      width={320 + coastExpand * 2}
-      height={140}
-      fill={pal.sandCliff}
-    />
-    <rect
-      x={10 - coastExpand}
-      y={34}
-      width={336 + coastExpand * 2}
-      height={114}
-      fill={pal.sandCliff}
-    />
+  const zoneAccent =
+    island.biome === 'marine'
+      ? { dojo: '#1d4ed8', dojoLight: '#38bdf8', taberna: '#0369a1', muelle: '#1e40af', ruina: '#475569' }
+      : island.biome === 'candy'
+      ? { dojo: '#db2777', dojoLight: '#f472b6', taberna: '#be185d', muelle: '#ec4899', ruina: '#831843' }
+      : island.biome === 'desert'
+      ? { dojo: '#b45309', dojoLight: '#f59e0b', taberna: '#92400e', muelle: '#d97706', ruina: '#78350f' }
+      : island.biome === 'volcano' || island.biome === 'fire_ice'
+      ? { dojo: '#7f1d1d', dojoLight: '#ef4444', taberna: '#451a03', muelle: '#334155', ruina: '#1e293b' }
+      : island.biome === 'sky'
+      ? { dojo: '#0284c7', dojoLight: '#38bdf8', taberna: '#0ea5e9', muelle: '#0369a1', ruina: '#64748b' }
+      : { dojo: '#991b1b', dojoLight: '#dc2626', taberna: '#92400e', muelle: '#0369a1', ruina: '#334155' };
 
-    {/* Broad Sandy Beach Shorelines */}
-    <rect
-      x={18 - coastExpand}
-      y={17}
-      width={320 + coastExpand * 2}
-      height={138}
-      fill={pal.sand}
-    />
-    <rect
-      x={10 - coastExpand}
-      y={29}
-      width={336 + coastExpand * 2}
-      height={112}
-      fill={pal.sand}
-    />
-    <rect
-      x={44 - Math.round(coastExpand * 0.5)}
-      y={10}
-      width={268 + coastExpand}
-      height={152}
-      fill={pal.sand}
-    />
+  const hasCustomMiddle =
+    island.id === 'elbaph' ||
+    island.id === 'pais-de-wano' ||
+    island.id === 'egghead' ||
+    island.id === 'reino-arabasta' ||
+    island.id === 'water-7' ||
+    island.id === 'archipielago-sabaody' ||
+    island.id === 'zou' ||
+    island.id === 'marineford' ||
+    island.id === 'nuevo-marineford' ||
+    island.id === 'impel-down' ||
+    island.id === 'dressrosa' ||
+    island.id === 'totto-land' ||
+    island.id === 'punk-hazard' ||
+    island.id === 'skypiea' ||
+    island.id === 'thriller-bark' ||
+    island.id === 'enies-lobby' ||
+    island.id === 'onigashima' ||
+    island.id === 'hachinosu' ||
+    island.id === 'isla-drum' ||
+    island.id === 'little-garden' ||
+    island.id === 'islas-conomi' ||
+    island.id === 'islas-polestar' ||
+    island.id === 'isla-cactus' ||
+    island.id === 'reino-germa' ||
+    island.id === 'tequila-wolf' ||
+    island.id === 'isla-kuraigana' ||
+    island.id === 'isla-raijin' ||
+    island.id === 'isla-lodestar' ||
+    island.id === 'amazon-lily' ||
+    island.id === 'isla-momoiro' ||
+    island.id === 'jaya' ||
+    island.id === 'reino-torino' ||
+    island.id === 'baltigo' ||
+    island.id === 'mary-geoise' ||
+    island.id === 'islas-kinoko' ||
+    island.id === 'weatheria' ||
+    island.id === 'anillos-largos' ||
+    island.id === 'mini-baratie' ||
+    island.id === 'mini-shell-town' ||
+    island.id === 'mini-estacion-shift' ||
+    island.id === 'mini-ohara';
 
-    {/* Expansive Elevated Biome Turf Plateau */}
-    <rect
-      x={26 - coastExpand}
-      y={22}
-      width={304 + coastExpand * 2}
-      height={130}
-      fill={pal.turfDark}
-    />
-    <rect
-      x={26 - coastExpand}
-      y={18}
-      width={304 + coastExpand * 2}
-      height={130}
-      fill={pal.turf}
-    />
-    <rect
-      x={18 - coastExpand}
-      y={30}
-      width={320 + coastExpand * 2}
-      height={106}
-      fill={pal.turf}
-    />
-    <rect
-      x={50 - Math.round(coastExpand * 0.5)}
-      y={12}
-      width={256 + coastExpand}
-      height={142}
-      fill={pal.turf}
-    />
-
-    {/* Punk Hazard Split-Biome Right Glacier Half */}
-    {island.biome === 'fire_ice' && (
-      <g>
-        <rect x={180} y={18} width={150 + coastExpand} height={130} fill="#38bdf8" />
-        <rect x={180} y={30} width={158 + coastExpand} height={106} fill="#7dd3fc" />
-        <rect x={180} y={12} width={126 + Math.round(coastExpand * 0.5)} height={142} fill="#bae6fd" />
-        <rect x={228} y={76} width={6} height={12} fill="#e0f2fe" />
-        <rect x={230} y={71} width={2} height={5} fill="#ffffff" />
-        <rect x={84} y={78} width={16} height={3} fill="#f97316" />
-        <rect x={92} y={80} width={10} height={2} fill="#fde047" />
-      </g>
-    )}
-
-    {/* Pixel Turf Texture Patches & Tiny Pixel Flowers */}
-    {island.biome !== 'fire_ice' && (
-      <g>
-        <rect x={96} y={42} width={168} height={82} fill={pal.turfLight} opacity="0.38" />
-        <rect x={42} y={66} width={12} height={4} fill={pal.turfLight} />
-        <rect x={302} y={98} width={14} height={4} fill={pal.turfLight} />
-        <rect x={136} y={72} width={2} height={2} fill="#fef08a" opacity="0.85" />
-        <rect x={226} y={56} width={2} height={2} fill="#fef08a" opacity="0.85" />
-        <rect x={146} y={108} width={2} height={2} fill="#fef08a" opacity="0.85" />
-      </g>
-    )}
-
-    {/* Stepped Pixel Dirt/Stone Paths Connecting All Landmarks */}
-    <rect x={58} y={50} width={242} height={8} fill={pal.pathEdge} />
-    <rect x={58} y={51} width={242} height={6} fill={pal.path} />
-    <rect x={52} y={84} width={254} height={8} fill={pal.pathEdge} />
-    <rect x={52} y={85} width={254} height={6} fill={pal.path} />
-    <rect x={64} y={120} width={236} height={8} fill={pal.pathEdge} />
-    <rect x={64} y={121} width={236} height={6} fill={pal.path} />
-    <rect x={174} y={40} width={12} height={88} fill={pal.pathEdge} />
-    <rect x={176} y={40} width={8} height={88} fill={pal.path} />
-    <rect x={66} y={42} width={10} height={86} fill={pal.pathEdge} />
-    <rect x={68} y={42} width={6} height={86} fill={pal.path} />
-    <rect x={282} y={42} width={10} height={86} fill={pal.pathEdge} />
-    <rect x={284} y={42} width={6} height={86} fill={pal.path} />
-
-    {/* Wooden Harbor Pier Extending East from Beach into Sea */}
-    <rect x={330} y={118} width={28} height={11} fill="#451a03" />
-    <rect x={330} y={120} width={26} height={7} fill="#92400e" />
-    <rect x={334} y={121} width={4} height={5} fill="#b45309" />
-    <rect x={342} y={121} width={4} height={5} fill="#b45309" />
-    <rect x={350} y={121} width={4} height={5} fill="#b45309" />
-    <rect x={338} y={116} width={2} height={13} fill="#291206" />
-    <rect x={352} y={116} width={2} height={13} fill="#291206" />
-
-    {/* CANON ICONIC ISLAND LANDMARKS */}
-    {island.id === 'elbaph' && (
-      <g>
-        {[
-          [88, 92], [94, 95], [100, 92], [92, 100], [98, 102],
-          [134, 96], [140, 99], [145, 95],
-          [236, 94], [242, 97], [248, 93], [240, 102], [246, 104],
-          [254, 96], [260, 100], [252, 108], [234, 108],
-          [184, 106], [190, 109],
-        ].map(([px, py], i) => (
-          <PixelPineTree key={`pin-${i}`} x={px} y={py} />
-        ))}
-
-        {[
-          { hx: 94, hy: 66, s1: '#2563eb', s2: '#dc2626' },
-          { hx: 118, hy: 58, s1: '#eab308', s2: '#16a34a' },
-          { hx: 142, hy: 62, s1: '#dc2626', s2: '#0d9488' },
-          { hx: 106, hy: 96, s1: '#2563eb', s2: '#eab308' },
-          { hx: 138, hy: 98, s1: '#16a34a', s2: '#dc2626' },
-        ].map((hut, idx) => (
-          <g key={`vhut-${idx}`}>
-            <rect x={hut.hx - 1} y={hut.hy + 14} width={18} height={2} fill="rgba(6, 12, 24, 0.35)" />
-            <rect x={hut.hx + 1} y={hut.hy + 7} width={14} height={7} fill="#6b3e1b" />
-            <polygon
-              points={`${hut.hx},${hut.hy + 8} ${hut.hx + 8},${hut.hy} ${hut.hx + 16},${hut.hy + 8}`}
-              fill="#92400e"
-            />
-            <polygon
-              points={`${hut.hx + 2},${hut.hy + 8} ${hut.hx + 8},${hut.hy + 2} ${hut.hx + 14},${hut.hy + 8}`}
-              fill="#b45309"
-            />
-            <line x1={hut.hx + 6} y1={hut.hy - 3} x2={hut.hx + 10} y2={hut.hy + 2} stroke="#78350f" strokeWidth="1.2" />
-            <line x1={hut.hx + 10} y1={hut.hy - 3} x2={hut.hx + 6} y2={hut.hy + 2} stroke="#78350f" strokeWidth="1.2" />
-            <rect x={hut.hx + 6} y={hut.hy + 9} width={4} height={5} fill="#ea580c" />
-            <rect x={hut.hx + 7} y={hut.hy + 10} width={2} height={4} fill="#fdba74" />
-            <rect x={hut.hx + 2} y={hut.hy + 10} width={2} height={2} fill={hut.s1} />
-            <rect x={hut.hx + 12} y={hut.hy + 10} width={2} height={2} fill={hut.s2} />
-          </g>
-        ))}
-
-        {/* Central Stone-Ringed Campfire Base */}
+  return (
+    <svg
+      className="pointer-events-none absolute inset-0 h-full w-full"
+      viewBox="0 0 360 180"
+      preserveAspectRatio="none"
+      shapeRendering="crispEdges"
+      style={{ imageRendering: 'pixelated' }}
+      aria-hidden="true"
+    >
+      {/* 1. DISTINCT SILHOUETTE COASTLINE & TERRAIN BASE */}
+      {kind === 'crescent_harbor' && (
         <g>
-          <rect x={122} y={84} width={8} height={5} fill="#475569" />
-          <rect x={123} y={85} width={6} height={3} fill="#ea580c" />
-          <rect x={125} y={83} width={2} height={3} fill="#fde047" />
-        </g>
-
-        {/* Colossal Treasure Tree Adam */}
-        <g>
-          <rect x={196} y={114} width={36} height={5} fill="rgba(6, 12, 24, 0.35)" />
-          <rect x={198} y={108} width={32} height={7} fill="#451a03" />
-          <rect x={202} y={102} width={24} height={11} fill="#5c3317" />
-          <rect x={204} y={56} width={20} height={56} fill="#5c3317" />
-          <rect x={207} y={56} width={6} height={56} fill="#78350f" />
-          <rect x={215} y={56} width={5} height={56} fill="#4a250d" />
-          <polygon points="204,64 176,48 184,48 208,58" fill="#5c3317" />
-          <polygon points="224,64 252,48 244,48 220,58" fill="#5c3317" />
-          <rect x={211} y={104} width={6} height={9} fill="#1c0d06" />
-          <rect x={216} y={64} width={2} height={2} fill="#fde047" />
-          <rect x={209} y={76} width={2} height={2} fill="#fbbf24" />
-          <rect x={217} y={88} width={2} height={2} fill="#fde047" />
-          <rect x={208} y={96} width={2} height={2} fill="#fbbf24" />
-
-          <rect x={158} y={32} width={110} height={24} fill="#0f3d23" />
-          <rect x={162} y={24} width={102} height={26} fill="#14532d" />
-          <rect x={170} y={17} width={86} height={24} fill="#15803d" />
-          <rect x={182} y={13} width={62} height={14} fill="#166534" />
-          <rect x={194} y={11} width={38} height={6} fill="#22c55e" />
-          <rect x={174} y={22} width={16} height={4} fill="#22c55e" opacity="0.55" />
-          <rect x={232} y={24} width={14} height={4} fill="#22c55e" opacity="0.55" />
-          <rect x={200} y={16} width={20} height={4} fill="#4ade80" opacity="0.45" />
-
-          <line x1={174} y1={32} x2={212} y2={23} stroke="#92400e" strokeWidth="1" strokeDasharray="2 2" />
-          <line x1={214} y1={23} x2={252} y2={32} stroke="#92400e" strokeWidth="1" strokeDasharray="2 2" />
-          <line x1={174} y1={32} x2={190} y2={46} stroke="#92400e" strokeWidth="1" strokeDasharray="2 2" />
-          <line x1={192} y1={46} x2={242} y2={46} stroke="#92400e" strokeWidth="1" strokeDasharray="2 2" />
-
-          {[
-            { tx: 168, ty: 26, roof: '#0d9488' },
-            { tx: 208, ty: 16, roof: '#7c3aed' },
-            { tx: 246, ty: 26, roof: '#dc2626' },
-            { tx: 184, ty: 40, roof: '#d97706' },
-            { tx: 236, ty: 40, roof: '#dc2626' },
-          ].map((th, i) => (
-            <g key={`th-${i}`}>
-              <rect x={th.tx} y={th.ty + 4} width={10} height={6} fill="#e2e8f0" />
-              <polygon
-                points={`${th.tx - 1},${th.ty + 4} ${th.tx + 5},${th.ty} ${th.tx + 11},${th.ty + 4}`}
-                fill={th.roof}
-              />
-              <rect x={th.tx + 4} y={th.ty + 6} width={2} height={4} fill="#f59e0b" />
-            </g>
-          ))}
-
-          {[170, 256].map((lx) => (
-            <g key={`lad-${lx}`}>
-              <rect x={lx} y={54} width={1} height={58} fill="#78350f" />
-              <rect x={lx + 3} y={54} width={1} height={58} fill="#78350f" />
-              {Array.from({ length: 14 }, (_, r) => (
-                <rect key={r} x={lx} y={56 + r * 4} width={4} height={1} fill="#b45309" />
-              ))}
-            </g>
-          ))}
-
-          <g fill="rgba(226, 232, 240, 0.36)">
-            <circle cx={162} cy={49} r={6} />
-            <circle cx={170} cy={48} r={7} />
-            <circle cx={179} cy={50} r={5} />
-            <circle cx={208} cy={47} r={7} />
-            <circle cx={219} cy={48} r={8} />
-            <circle cx={231} cy={49} r={6} />
-            <circle cx={250} cy={50} r={6} />
-            <circle cx={259} cy={49} r={5} />
-          </g>
-        </g>
-      </g>
-    )}
-
-    {island.id === 'pais-de-wano' && (
-      <g>
-        <PixelMountain x={86} y={14} w={46} h={42} bodyColor="#64748b" shadeColor="#475569" capColor="#f8fafc" />
-        <rect x={80} y={12} width={14} height={4} fill="rgba(248, 250, 252, 0.85)" />
-        <rect x={83} y={10} width={8} height={3} fill="rgba(248, 250, 252, 0.9)" />
-        <rect x={218} y={54} width={60} height={34} fill="#5c4738" />
-        <rect x={222} y={52} width={52} height={6} fill="#3f6212" />
-        <rect x={228} y={56} width={5} height={34} fill="#7dd3fc" />
-        <rect x={245} y={56} width={5} height={24} fill="#7dd3fc" />
-        <rect x={262} y={56} width={5} height={26} fill="#7dd3fc" />
-        <rect x={230} y={56} width={2} height={34} fill="#e0f2fe" />
-        <rect x={247} y={56} width={2} height={24} fill="#e0f2fe" />
-        <rect x={264} y={56} width={2} height={26} fill="#e0f2fe" />
-        <rect x={243} y={77} width={11} height={11} fill="#29160e" />
-        <rect x={240} y={73} width={17} height={2} fill="#dc2626" />
-        <rect x={242} y={75} width={2} height={13} fill="#b91c1c" />
-        <rect x={253} y={75} width={2} height={13} fill="#b91c1c" />
-        <rect x={226} y={90} width={12} height={58} fill="#0284c7" />
-        <rect x={229} y={90} width={5} height={58} fill="#38bdf8" />
-        <rect x={222} y={102} width={20} height={4} fill="#b91c1c" />
-        <rect x={224} y={100} width={16} height={2} fill="#ef4444" />
-        <rect x={230} y={40} width={36} height={12} fill="#f8fafc" />
-        <rect x={226} y={37} width={44} height={4} fill="#1e293b" />
-        <rect x={235} y={29} width={26} height={8} fill="#f8fafc" />
-        <rect x={231} y={26} width={34} height={4} fill="#1e293b" />
-        <polygon points="236,26 248,18 260,26" fill="#0f172a" />
-        <rect x={242} y={17} width={2} height={2} fill="#facc15" />
-        <rect x={252} y={17} width={2} height={2} fill="#facc15" />
-        <PixelHouse x={102} y={66} roofColor="#dc2626" wallColor="#f8fafc" />
-        <PixelHouse x={122} y={56} roofColor="#1e293b" wallColor="#f8fafc" />
-        <PixelHouse x={96} y={98} roofColor="#dc2626" wallColor="#f8fafc" />
-        <PixelHouse x={118} y={104} roofColor="#1e293b" wallColor="#f8fafc" />
-        <PixelHouse x={156} y={64} roofColor="#1e293b" wallColor="#f8fafc" />
-        <PixelHouse x={198} y={100} roofColor="#1e293b" wallColor="#f8fafc" />
-        <PixelPalmTree x={140} y={62} sakura />
-        <PixelPalmTree x={178} y={66} sakura />
-        <PixelPalmTree x={282} y={62} sakura />
-        <PixelPalmTree x={294} y={66} sakura />
-        <PixelPineTree x={146} y={102} />
-        <PixelPineTree x={154} y={106} />
-        <PixelPineTree x={208} y={68} />
-      </g>
-    )}
-
-    {island.id === 'egghead' && (
-      <g>
-        <rect x={146} y={58} width={68} height={18} fill="#e0f2fe" />
-        <rect x={136} y={62} width={88} height={12} fill="#f8fafc" />
-        <rect x={176} y={74} width={8} height={38} fill="rgba(34, 211, 238, 0.36)" />
-        <rect x={160} y={48} width={40} height={14} fill="#f472b6" />
-        <rect x={164} y={52} width={32} height={4} fill="#fbcfe8" />
-        <rect x={166} y={24} width={28} height={16} fill="#ec4899" />
-        <rect x={170} y={20} width={20} height={5} fill="#f472b6" />
-        <rect x={128} y={96} width={16} height={10} fill="#38bdf8" />
-        <rect x={148} y={96} width={16} height={10} fill="#f43f5e" />
-        <rect x={196} y={96} width={16} height={10} fill="#facc15" />
-        <rect x={216} y={96} width={16} height={10} fill="#a855f7" />
-        <rect x={126} y={94} width={108} height={2} fill="#22d3ee" opacity="0.65" />
-      </g>
-    )}
-
-    {island.id === 'reino-arabasta' && (
-      <g>
-        <PixelMountain x={92} y={56} w={30} h={22} bodyColor="#b45309" shadeColor="#78350f" capColor="#fde68a" />
-        <rect x={142} y={94} width={28} height={16} fill="#fef3c7" />
-        <rect x={146} y={88} width={20} height={6} fill="#eab308" />
-        <rect x={154} y={83} width={4} height={5} fill="#fde047" />
-        <rect x={192} y={56} width={10} height={74} fill="#0ea5e9" />
-        <rect x={195} y={56} width={4} height={74} fill="#7dd3fc" />
-        <PixelHouse x={108} y={98} roofColor="#d97706" wallColor="#fef3c7" />
-        <PixelHouse x={212} y={98} roofColor="#b45309" wallColor="#fde68a" />
-      </g>
-    )}
-
-    {island.id === 'water-7' && (
-      <g>
-        <rect x={126} y={58} width={108} height={8} fill="#0284c7" />
-        <rect x={126} y={60} width={108} height={4} fill="#38bdf8" />
-        <rect x={174} y={66} width={12} height={52} fill="#0284c7" />
-        <PixelHouse x={108} y={96} roofColor="#0284c7" wallColor="#f8fafc" />
-        <PixelHouse x={128} y={96} roofColor="#0369a1" wallColor="#e2e8f0" />
-        <PixelHouse x={208} y={96} roofColor="#0284c7" wallColor="#f8fafc" />
-        <PixelHouse x={228} y={96} roofColor="#0369a1" wallColor="#e2e8f0" />
-      </g>
-    )}
-
-    {island.id === 'archipielago-sabaody' && (
-      <g>
-        {[114, 224].map((mx) => (
-          <g key={`mang-${mx}`}>
-            <rect x={mx + 6} y={62} width={12} height={42} fill="#78350f" />
-            <rect x={mx} y={50} width={24} height={14} fill="#15803d" />
-            <rect x={mx + 4} y={44} width={16} height={8} fill="#22c55e" />
-          </g>
-        ))}
-        <PixelHouse x={144} y={98} roofColor="#ec4899" wallColor="#fef3c7" />
-        <PixelHouse x={204} y={98} roofColor="#0d9488" wallColor="#f8fafc" />
-      </g>
-    )}
-
-    {island.id === 'zou' && (
-      <g>
-        <rect x={166} y={64} width={28} height={36} fill="#334155" />
-        <rect x={160} y={54} width={40} height={14} fill="#15803d" />
-        <rect x={166} y={48} width={28} height={8} fill="#22c55e" />
-        <PixelHouse x={118} y={96} roofColor="#a3e635" wallColor="#cbd5e1" />
-        <PixelHouse x={222} y={96} roofColor="#65a30d" wallColor="#cbd5e1" />
-      </g>
-    )}
-
-    {/* BIOME-SPECIFIC PIXEL AMBIANCE PROPS & VILLAGES */}
-    {island.biome === 'village' && (
-      <g>
-        <PixelMountain x={92} y={54} w={26} h={20} bodyColor="#64748b" shadeColor="#475569" capColor="#cbd5e1" />
-        <rect x={142} y={92} width={12} height={18} fill="#cbd5e1" />
-        <rect x={141} y={88} width={14} height={5} fill="#b91c1c" />
-        <rect x={145} y={84} width={6} height={4} fill="#dc2626" />
-        <rect x={147} y={90} width={2} height={12} fill="#78350f" />
-        <rect x={140} y={95} width={16} height={2} fill="#78350f" />
-        <rect x={146} y={102} width={4} height={8} fill="#451a03" />
-        <rect x={158} y={100} width={7} height={5} fill="#64748b" />
-        <rect x={159} y={98} width={5} height={2} fill="#92400e" />
-        <PixelHouse x={106} y={96} roofColor="#dc2626" wallColor="#f8fafc" />
-        <PixelHouse x={208} y={62} roofColor="#0284c7" wallColor="#fef3c7" />
-        <PixelHouse x={232} y={96} roofColor="#d97706" wallColor="#f8fafc" />
-        <PixelPalmTree x={36} y={96} />
-        <PixelPalmTree x={214} y={94} />
-        <PixelPalmTree x={306} y={96} />
-        <PixelPineTree x={124} y={64} />
-        <PixelPineTree x={132} y={68} />
-      </g>
-    )}
-
-    {island.biome === 'pagoda' && (
-      <g>
-        <PixelPalmTree x={36} y={96} sakura />
-        <PixelPalmTree x={214} y={94} sakura />
-        <PixelPalmTree x={306} y={96} sakura />
-        <rect x={142} y={96} width={16} height={2} fill="#dc2626" />
-        <rect x={140} y={94} width={20} height={2} fill="#b91c1c" />
-        <rect x={144} y={98} width={2} height={11} fill="#991b1b" />
-        <rect x={154} y={98} width={2} height={11} fill="#991b1b" />
-        <PixelHouse x={112} y={96} roofColor="#1e293b" wallColor="#f8fafc" />
-        <rect x={224} y={102} width={4} height={6} fill="#94a3b8" />
-        <rect x={225} y={103} width={2} height={2} fill="#fde047" />
-      </g>
-    )}
-
-    {island.biome === 'desert' && (
-      <g>
-        <rect x={208} y={94} width={26} height={12} fill="#0284c7" />
-        <rect x={210} y={96} width={22} height={8} fill="#38bdf8" />
-        <PixelPalmTree x={232} y={86} />
-        <rect x={38} y={96} width={4} height={11} fill="#15803d" />
-        <rect x={35} y={98} width={3} height={3} fill="#166534" />
-        <rect x={42} y={100} width={3} height={3} fill="#166534" />
-        <rect x={92} y={98} width={12} height={8} fill="#fef3c7" />
-        <rect x={91} y={96} width={14} height={3} fill="#d97706" />
-        <PixelHouse x={122} y={64} roofColor="#d97706" wallColor="#fef3c7" />
-      </g>
-    )}
-
-    {island.biome === 'volcano' && (
-      <g>
-        <PixelMountain x={100} y={56} w={30} h={22} bodyColor="#334155" shadeColor="#1e293b" capColor="#ea580c" />
-        <rect x={208} y={94} width={24} height={12} fill="#991b1b" />
-        <rect x={212} y={96} width={16} height={8} fill="#ea580c" />
-        <rect x={216} y={98} width={8} height={4} fill="#fde047" />
-        <rect x={38} y={92} width={7} height={14} fill="#1e293b" />
-        <rect x={40} y={88} width={3} height={4} fill="#475569" />
-        <rect x={144} y={98} width={8} height={10} fill="#0f172a" />
-        <rect x={147} y={94} width={2} height={4} fill="#ef4444" />
-        <PixelPineTree x={238} y={66} />
-        <PixelPineTree x={246} y={68} />
-      </g>
-    )}
-
-    {island.biome === 'sky' && (
-      <g>
-        <PixelMountain x={96} y={56} w={26} h={20} bodyColor="#94a3b8" shadeColor="#64748b" capColor="#ffffff" />
-        <rect x={24} y={144} width={30} height={8} fill="#e2e8f0" />
-        <rect x={30} y={140} width={18} height={4} fill="#f8fafc" />
-        <rect x={302} y={24} width={30} height={8} fill="#e2e8f0" />
-        <rect x={308} y={20} width={18} height={4} fill="#f8fafc" />
-        <rect x={212} y={94} width={14} height={13} fill="#b45309" />
-        <rect x={215} y={96} width={8} height={8} fill="#eab308" />
-        <rect x={217} y={98} width={4} height={4} fill="#fef08a" />
-        <PixelHouse x={122} y={96} roofColor="#38bdf8" wallColor="#f8fafc" />
-      </g>
-    )}
-
-    {island.biome === 'candy' && (
-      <g>
-        <PixelPalmTree x={36} y={96} candy />
-        <PixelPalmTree x={214} y={94} candy />
-        <PixelPalmTree x={306} y={96} candy />
-        <rect x={144} y={94} width={4} height={14} fill="#f8fafc" />
-        <rect x={144} y={96} width={4} height={2} fill="#ef4444" />
-        <rect x={144} y={100} width={4} height={2} fill="#ef4444" />
-        <rect x={144} y={104} width={4} height={2} fill="#ef4444" />
-        <rect x={224} y={97} width={10} height={9} fill="#fbcfe8" />
-        <rect x={223} y={95} width={12} height={3} fill="#db2777" />
-        <PixelHouse x={110} y={96} roofColor="#ec4899" wallColor="#fdf2f8" />
-      </g>
-    )}
-
-    {island.biome === 'marine' && (
-      <g>
-        <PixelMountain x={94} y={56} w={26} h={20} bodyColor="#475569" shadeColor="#334155" capColor="#cbd5e1" />
-        <rect x={36} y={95} width={14} height={11} fill="#e2e8f0" />
-        <rect x={36} y={93} width={14} height={2} fill="#1d4ed8" />
-        <rect x={41} y={99} width={4} height={7} fill="#334155" />
-        <rect x={214} y={95} width={18} height={11} fill="#cbd5e1" />
-        <rect x={214} y={93} width={18} height={2} fill="#1d4ed8" />
-        <rect x={218} y={98} width={10} height={3} fill="#0f172a" />
-        <PixelHouse x={114} y={96} roofColor="#1d4ed8" wallColor="#f1f5f9" />
-        <PixelHouse x={238} y={96} roofColor="#1e40af" wallColor="#e2e8f0" />
-      </g>
-    )}
-
-    {(island.biome === 'colosseum' ||
-      island.biome === 'fortress' ||
-      island.biome === 'treasure') &&
-      island.id !== 'elbaph' &&
-      island.id !== 'egghead' &&
-      island.id !== 'water-7' && (
-        <g>
-          <PixelMountain x={96} y={56} w={26} h={20} bodyColor="#64748b" shadeColor="#475569" capColor="#94a3b8" />
-          <PixelPalmTree x={36} y={96} />
-          <PixelPalmTree x={306} y={96} />
-          <rect x={210} y={95} width={16} height={10} fill="#92400e" />
-          <rect x={212} y={93} width={12} height={4} fill="#eab308" />
-          <rect x={216} y={98} width={4} height={4} fill="#fde047" />
-          <PixelHouse x={114} y={96} roofColor="#dc2626" wallColor="#f8fafc" />
-          <PixelHouse x={232} y={96} roofColor="#d97706" wallColor="#fef3c7" />
+          {/* U-shaped Marineford crescent bay */}
+          <rect x={14 - coastExpand} y={10} width={332 + coastExpand * 2} height={154} fill={pal.foam} opacity="0.52" />
+          <rect x={20 - coastExpand} y={14} width={320 + coastExpand * 2} height={144} fill={pal.sandCliff} />
+          <rect x={20 - coastExpand} y={12} width={320 + coastExpand * 2} height={138} fill={pal.sand} />
+          <rect x={28 - coastExpand} y={16} width={304 + coastExpand * 2} height={128} fill={effectiveTurf} />
+          {/* Carve out central-southern harbor bay */}
+          <rect x={118} y={104} width={124} height={68} fill={pal.foam} opacity="0.65" />
+          <rect x={124} y={108} width={112} height={68} fill={pal.oceanMid} />
+          <rect x={116} y={96} width={128} height={12} fill="#cbd5e1" />
         </g>
       )}
 
-    {/* 1. RUINAS */}
-    <g>
-      <rect x={46} y={44} width={36} height={3} fill="#1e293b" />
-      <rect x={48} y={26} width={32} height={18} fill="#334155" />
-      <rect x={51} y={29} width={26} height={14} fill="#1e293b" />
-      <polygon points="46,24 64,16 82,24" fill="#64748b" />
-      <polygon points="50,24 64,18 78,24" fill="#94a3b8" />
-      <rect x={49} y={24} width={5} height={19} fill="#cbd5e1" />
-      <rect x={57} y={26} width={3} height={17} fill="#94a3b8" />
-      <rect x={74} y={24} width={5} height={19} fill="#cbd5e1" />
-      <rect x={68} y={26} width={3} height={17} fill="#94a3b8" />
-      <rect x={50} y={24} width={4} height={2} fill="#4d7c0f" />
-      <rect x={75} y={32} width={3} height={2} fill="#4d7c0f" />
-      <rect x={59} y={36} width={10} height={8} fill="#78350f" />
-      <rect x={60} y={35} width={8} height={3} fill="#facc15" />
-      <rect x={63} y={36} width={2} height={2} fill="#fef08a" />
-    </g>
-
-    {/* 2. DOJO */}
-    {(() => {
-      const dx = island.id === 'elbaph' ? -58 : 0;
-      return (
-        <g transform={dx !== 0 ? `translate(${dx}, 0)` : undefined}>
-          <rect x={164} y={41} width={32} height={2} fill="#1e293b" />
-          <rect x={162} y={23} width={36} height={5} fill="#7f1d1d" />
-          <polygon points="160,24 180,15 200,24" fill="#991b1b" />
-          <polygon points="165,23 180,17 195,23" fill="#dc2626" />
-          <rect x={177} y={14} width={6} height={2} fill="#facc15" />
-          <rect x={167} y={28} width={26} height={13} fill="#f1f5f9" />
-          <rect x={167} y={28} width={26} height={2} fill="#78350f" />
-          <rect x={167} y={28} width={2} height={13} fill="#78350f" />
-          <rect x={191} y={28} width={2} height={13} fill="#78350f" />
-          <rect x={176} y={32} width={8} height={9} fill="#5c3317" />
-          <rect x={179} y={32} width={2} height={9} fill="#291206" />
-          <rect x={170} y={31} width={4} height={5} fill="#fde68a" />
-          <rect x={186} y={31} width={4} height={5} fill="#fde68a" />
-          <rect x={163} y={29} width={3} height={4} fill="#ef4444" />
-          <rect x={194} y={29} width={3} height={4} fill="#ef4444" />
+      {kind === 'ship_deck' && (
+        <g>
+          {/* Colossal Ship-Island / Sea Fortress Hull */}
+          <rect x={6 - coastExpand} y={24} width={348 + coastExpand * 2} height={130} fill={pal.foam} opacity="0.45" />
+          <polygon points={`${18 - coastExpand},30 284,18 352,90 284,162 ${18 - coastExpand},150`} fill="#292524" />
+          <polygon points={`${26 - coastExpand},34 280,24 342,90 280,156 ${26 - coastExpand},146`} fill="#5c3317" />
+          <polygon points={`${32 - coastExpand},38 276,28 334,90 276,152 ${32 - coastExpand},142`} fill={effectiveTurf} />
+          {[46, 68, 90, 112, 134].map((py) => (
+            <rect key={py} x={34} y={py} width={250} height={1} fill="rgba(0,0,0,0.22)" />
+          ))}
         </g>
-      );
-    })()}
+      )}
 
-    {/* 3. GUARIDA DEL JEFE */}
-    <g>
-      <rect x={274} y={44} width={36} height={3} fill="#090d16" />
-      <rect x={276} y={25} width={32} height={20} fill="#1e293b" />
-      <rect x={274} y={19} width={8} height={26} fill="#334155" />
-      <rect x={302} y={19} width={8} height={26} fill="#334155" />
-      <rect x={274} y={17} width={3} height={3} fill="#475569" />
-      <rect x={279} y={17} width={3} height={3} fill="#475569" />
-      <rect x={302} y={17} width={3} height={3} fill="#475569" />
-      <rect x={307} y={17} width={3} height={3} fill="#475569" />
-      <rect x={282} y={22} width={20} height={4} fill="#475569" />
-      <rect x={284} y={30} width={16} height={15} fill="#450a0a" />
-      <rect x={288} y={33} width={8} height={12} fill="#1c0606" />
-      <rect x={289} y={25} width={6} height={4} fill="#dc2626" />
-      <rect x={291} y={26} width={2} height={2} fill="#fde047" />
-      <rect x={280} y={39} width={3} height={4} fill="#f97316" />
-      <rect x={281} y={38} width={1} height={2} fill="#fde047" />
-      <rect x={301} y={39} width={3} height={4} fill="#f97316" />
-      <rect x={302} y={38} width={1} height={2} fill="#fde047" />
-    </g>
+      {kind === 'abyss_ring' && (
+        <g>
+          {/* Abyssal waterfall ring (Enies Lobby / Impel Down) */}
+          <rect x={8 - coastExpand} y={8} width={344 + coastExpand * 2} height={164} fill="#061c38" />
+          <rect x={24 - coastExpand} y={16} width={312 + coastExpand * 2} height={148} fill="#0ea5e9" opacity="0.35" />
+          <rect x={36 - coastExpand} y={22} width={288 + coastExpand * 2} height={134} fill={pal.sandCliff} />
+          <rect x={42 - coastExpand} y={20} width={276 + coastExpand * 2} height={128} fill={effectiveTurf} />
+          {/* Causeway bridges east & south */}
+          <rect x={166} y={142} width={28} height={36} fill="#cbd5e1" />
+          <rect x={300} y={82} width={56} height={16} fill="#cbd5e1" />
+        </g>
+      )}
 
-    {/* 4. TABERNA (static base; chimney smoke rendered in lightweight overlay) */}
-    <g>
-      <rect x={46} y={136} width={40} height={2} fill="#1e293b" />
-      <rect x={74} y={102} width={5} height={10} fill="#475569" />
-      <rect x={48} y={114} width={36} height={22} fill="#5c3317" />
-      <rect x={51} y={117} width={30} height={17} fill="#78350f" />
-      <rect x={51} y={117} width={30} height={2} fill="#451a03" />
-      <polygon points="44,115 66,104 88,115" fill="#92400e" />
-      <polygon points="48,114 66,106 84,114" fill="#b45309" />
-      <rect x={45} y={114} width={42} height={2} fill="#d97706" />
-      <rect x={54} y={121} width={7} height={6} fill="#fbbf24" />
-      <rect x={57} y={121} width={1} height={6} fill="#451a03" />
-      <rect x={54} y={124} width={7} height={1} fill="#451a03" />
-      <rect x={66} y={122} width={8} height={12} fill="#291206" />
-      <rect x={68} y={123} width={4} height={11} fill="#451a03" />
-      <rect x={76} y={121} width={4} height={5} fill="#fbbf24" />
-      <rect x={66} y={117} width={8} height={3} fill="#fde047" />
-      <rect x={85} y={127} width={6} height={8} fill="#92400e" />
-      <rect x={85} y={129} width={6} height={1} fill="#1e293b" />
-      <rect x={85} y={132} width={6} height={1} fill="#1e293b" />
-    </g>
+      {kind === 'sea_bridge' && (
+        <g>
+          {/* Twin shore islets joined by a monumental stone sea-bridge */}
+          <rect x={10 - coastExpand} y={16} width={110} height={146} fill={pal.foam} opacity="0.52" />
+          <rect x={18 - coastExpand} y={22} width={96} height={134} fill={pal.sand} />
+          <rect x={24 - coastExpand} y={24} width={84} height={124} fill={effectiveTurf} />
+          <rect x={240 + coastExpand} y={16} width={110} height={146} fill={pal.foam} opacity="0.52" />
+          <rect x={246 + coastExpand} y={22} width={96} height={134} fill={pal.sand} />
+          <rect x={252 + coastExpand} y={24} width={84} height={124} fill={effectiveTurf} />
+          {/* Center monumental bridge span */}
+          <rect x={90} y={66} width={180} height={46} fill="#334155" />
+          <rect x={90} y={70} width={180} height={38} fill="#94a3b8" />
+          <rect x={90} y={78} width={180} height={22} fill="#cbd5e1" />
+          <rect x={110} y={22} width={140} height={26} fill={effectiveTurf} opacity="0.92" />
+        </g>
+      )}
 
-    {/* 5. MUELLE PUESTO PORTUARIO */}
-    <g>
-      <rect x={282} y={132} width={32} height={2} fill="#1e293b" />
-      <rect x={284} y={116} width={28} height={16} fill="#5c3317" />
-      <rect x={286} y={118} width={24} height={13} fill="#78350f" />
-      <polygon points="280,117 298,109 316,117" fill="#0369a1" />
-      <rect x={282} y={115} width={32} height={3} fill="#0284c7" />
-      <rect x={286} y={115} width={4} height={3} fill="#e0f2fe" />
-      <rect x={296} y={115} width={4} height={3} fill="#e0f2fe" />
-      <rect x={306} y={115} width={4} height={3} fill="#e0f2fe" />
-      <rect x={287} y={120} width={8} height={6} fill="#fde68a" />
-      <rect x={299} y={120} width={9} height={11} fill="#291206" />
-      <rect x={315} y={125} width={5} height={6} fill="#b45309" />
-      <rect x={326} y={112} width={2} height={10} fill="#1e293b" />
-      <rect x={325} y={111} width={4} height={3} fill="#fde047" />
-    </g>
+      {kind === 'twin_islets' && (
+        <g>
+          {/* Multi-islet archipelago connected by turquoise sandbars */}
+          <rect x={10 - coastExpand} y={12} width={156} height={152} fill={pal.foam} opacity="0.55" />
+          <rect x={194} y={14} width={156 + coastExpand} height={150} fill={pal.foam} opacity="0.55" />
+          <rect x={18 - coastExpand} y={18} width={140} height={138} fill={pal.sand} />
+          <rect x={202} y={20} width={140 + coastExpand} height={136} fill={pal.sand} />
+          <rect x={138} y={68} width={84} height={38} fill={pal.sand} />
+          <rect x={26 - coastExpand} y={22} width={124} height={126} fill={effectiveTurf} />
+          <rect x={210} y={24} width={124 + coastExpand} height={124} fill={effectiveTurf} />
+          <rect x={144} y={74} width={72} height={24} fill={effectiveTurfLight} opacity="0.8" />
+        </g>
+      )}
 
-    {/* Fish-Man Island Submerged Ryugu Kingdom Bubble Dome & Sunlight Tree Eve */}
-    {island.isUnderwaterTrench && trenchSubmerged && (
-      <g>
-        <rect x={0} y={0} width={360} height={180} fill="rgba(2, 12, 34, 0.35)" />
-        <polygon points="154,0 206,0 226,110 134,110" fill="rgba(253, 224, 71, 0.14)" />
-        <ellipse
-          cx={180}
-          cy={90}
-          rx={164}
-          ry={82}
-          fill="rgba(34, 211, 238, 0.08)"
-          stroke="#67e8f9"
-          strokeWidth="1.5"
-          opacity="0.82"
-        />
-        <ellipse
-          cx={180}
-          cy={90}
-          rx={154}
-          ry={75}
-          fill="none"
-          stroke="#f9a8d4"
-          strokeWidth="1"
-          strokeDasharray="4 3"
-          opacity="0.55"
-        />
-        <rect x={166} y={56} width={28} height={16} fill="#ec4899" />
-        <polygon points="162,57 180,44 198,57" fill="#0d9488" />
-        <rect x={176} y={40} width={8} height={6} fill="#facc15" />
-      </g>
-    )}
+      {kind === 'cloud_sky' && (
+        <g>
+          {/* Fluffy white sea-cloud perimeter */}
+          <rect x={8 - coastExpand} y={14} width={344 + coastExpand * 2} height={148} fill="rgba(224,242,254,0.45)" />
+          <circle cx={68} cy={46} r={42} fill="#e2e8f0" />
+          <circle cx={140} cy={36} r={44} fill="#f1f5f9" />
+          <circle cx={224} cy={36} r={44} fill="#f1f5f9" />
+          <circle cx={294} cy={48} r={42} fill="#e2e8f0" />
+          <circle cx={64} cy={128} r={40} fill="#cbd5e1" />
+          <circle cx={148} cy={136} r={42} fill="#e2e8f0" />
+          <circle cx={224} cy={136} r={42} fill="#e2e8f0" />
+          <circle cx={294} cy={128} r={40} fill="#cbd5e1" />
+          <rect x={36} y={20} width={288} height={132} fill="#f8fafc" />
+          <rect x={54} y={28} width={252} height={114} fill={effectiveTurf} opacity="0.88" />
+        </g>
+      )}
 
-    {/* Translucent Sky Rainbow Arch */}
-    {island.hasRainbow && (
-      <g opacity={island.id === 'elbaph' ? '0.66' : '0.58'} fill="none">
-        {[
-          { rOff: 0, color: '#ef4444' },
-          { rOff: 2, color: '#f97316' },
-          { rOff: 4, color: '#eab308' },
-          { rOff: 6, color: '#22c55e' },
-          { rOff: 8, color: '#38bdf8' },
-          { rOff: 10, color: '#a855f7' },
-        ].map((band) => (
-          <path
-            key={band.color}
-            d={`M ${30 + band.rOff} 106 A ${150 - band.rOff} ${98 - band.rOff * 0.55} 0 0 1 ${330 - band.rOff} 106`}
-            stroke={band.color}
-            strokeWidth="2"
+      {kind === 'jagged_volcanic' && (
+        <g>
+          {/* Jagged basalt & lava shoreline */}
+          <polygon
+            points={`14,42 52,14 118,22 180,8 250,20 318,12 348,46 338,104 348,144 294,162 214,154 156,166 78,154 20,160 8,108`}
+            fill={pal.foam}
+            opacity="0.48"
           />
-        ))}
-        <rect x={165} y={5} width={2} height={2} fill="#fef08a" opacity="0.9" />
-        <rect x={198} y={6} width={2} height={2} fill="#e0f2fe" opacity="0.9" />
-        <rect x={76} y={36} width={2} height={2} fill="#fbcfe8" opacity="0.85" />
-        <rect x={282} y={38} width={2} height={2} fill="#bae6fd" opacity="0.85" />
+          <polygon
+            points={`20,44 56,18 120,26 180,14 248,24 312,16 340,48 332,104 340,140 290,156 214,148 156,158 82,148 26,154 16,108`}
+            fill={pal.sandCliff}
+          />
+          <polygon
+            points={`26,46 60,22 122,30 180,18 244,28 306,20 332,50 326,102 332,134 286,150 214,142 156,152 86,142 32,148 24,106`}
+            fill={effectiveTurf}
+          />
+        </g>
+      )}
+
+      {(kind === 'standard' || kind === 'split_fire_ice' || kind === 'snow_rockies') && (
+        <g>
+          {/* Seed-varied cove & cape silhouettes so standard islands don't look identical */}
+          <rect x={12 - coastExpand} y={10} width={332 + coastExpand * 2} height={158} fill={pal.reef} opacity="0.38" />
+          <rect x={4 - coastExpand} y={26} width={348 + coastExpand * 2} height={126} fill={pal.reef} opacity="0.38" />
+          <rect x={16 - coastExpand} y={14} width={324 + coastExpand * 2} height={150} fill={pal.foam} opacity="0.56" />
+          <rect x={8 - coastExpand} y={30} width={340 + coastExpand * 2} height={118} fill={pal.foam} opacity="0.56" />
+          <rect x={18 - coastExpand} y={22} width={320 + coastExpand * 2} height={140} fill={pal.sandCliff} />
+          <rect x={10 - coastExpand} y={34} width={336 + coastExpand * 2} height={114} fill={pal.sandCliff} />
+          <rect x={18 - coastExpand} y={17} width={320 + coastExpand * 2} height={138} fill={pal.sand} />
+          <rect x={10 - coastExpand} y={29} width={336 + coastExpand * 2} height={112} fill={pal.sand} />
+          <rect x={44 - Math.round(coastExpand * 0.5)} y={10} width={268 + coastExpand} height={152} fill={pal.sand} />
+          <rect x={26 - coastExpand} y={22} width={304 + coastExpand * 2} height={130} fill={effectiveTurfDark} />
+          <rect x={26 - coastExpand} y={18} width={304 + coastExpand * 2} height={130} fill={effectiveTurf} />
+          <rect x={18 - coastExpand} y={30} width={320 + coastExpand * 2} height={106} fill={effectiveTurf} />
+          <rect x={50 - Math.round(coastExpand * 0.5)} y={12} width={256 + coastExpand} height={142} fill={effectiveTurf} />
+          {/* Asymmetric cove cutout along mid-edges, clear of corner zone buildings */}
+          {seed % 3 === 1 && kind === 'standard' && (
+            <rect x={8} y={68} width={16} height={38} fill={pal.oceanMid} />
+          )}
+          {seed % 3 === 2 && kind === 'standard' && (
+            <rect x={156} y={148} width={48} height={18} fill={pal.oceanMid} />
+          )}
+        </g>
+      )}
+
+      {/* Punk Hazard Split-Biome Right Glacier Half & Steaming Canal */}
+      {island.biome === 'fire_ice' && (
+        <g>
+          <rect x={180} y={18} width={150 + coastExpand} height={130} fill="#38bdf8" />
+          <rect x={180} y={30} width={158 + coastExpand} height={106} fill="#7dd3fc" />
+          <rect x={180} y={12} width={126 + Math.round(coastExpand * 0.5)} height={142} fill="#bae6fd" />
+          <rect x={174} y={12} width={12} height={148} fill="#0284c7" />
+          <rect x={177} y={12} width={6} height={148} fill="#7dd3fc" />
+          <rect x={228} y={76} width={6} height={12} fill="#e0f2fe" />
+          <rect x={230} y={71} width={2} height={5} fill="#ffffff" />
+          <rect x={84} y={78} width={16} height={3} fill="#f97316" />
+          <rect x={92} y={80} width={10} height={2} fill="#fde047" />
+        </g>
+      )}
+
+      {/* Pixel Turf Texture Patches & Flowers */}
+      {island.biome !== 'fire_ice' && (
+        <g>
+          <rect x={96} y={42} width={168} height={82} fill={effectiveTurfLight} opacity="0.32" />
+          <rect x={42} y={66} width={12} height={4} fill={effectiveTurfLight} />
+          <rect x={302} y={98} width={14} height={4} fill={effectiveTurfLight} />
+          <rect x={136} y={72} width={2} height={2} fill="#fef08a" opacity="0.85" />
+          <rect x={226} y={56} width={2} height={2} fill="#fef08a" opacity="0.85" />
+        </g>
+      )}
+
+      {/* 2. VARIED ROAD TOPOLOGIES (NOT THE SAME # GRID EVERYWHERE) */}
+      {(kind === 'crescent_harbor' || seed % 4 === 1) && (
+        <g>
+          {/* Grand promenade arch connecting zones */}
+          <rect x={60} y={48} width={236} height={7} fill={pal.pathEdge} />
+          <rect x={60} y={49} width={236} height={5} fill={pal.path} />
+          <rect x={66} y={48} width={8} height={76} fill={pal.pathEdge} />
+          <rect x={67} y={48} width={6} height={76} fill={pal.path} />
+          <rect x={284} y={48} width={8} height={76} fill={pal.pathEdge} />
+          <rect x={285} y={48} width={6} height={76} fill={pal.path} />
+          <rect x={174} y={48} width={10} height={42} fill={pal.pathEdge} />
+          <rect x={176} y={48} width={6} height={42} fill={pal.path} />
+        </g>
+      )}
+
+      {kind !== 'crescent_harbor' && seed % 4 === 0 && (
+        <g>
+          {/* Central circular stone plaza + radial spokes */}
+          <circle cx={180} cy={88} r={22} fill={pal.pathEdge} />
+          <circle cx={180} cy={88} r={19} fill={pal.path} />
+          <rect x={64} y={84} width={232} height={7} fill={pal.pathEdge} />
+          <rect x={64} y={85} width={232} height={5} fill={pal.path} />
+          <rect x={175} y={40} width={10} height={92} fill={pal.pathEdge} />
+          <rect x={177} y={40} width={6} height={92} fill={pal.path} />
+          <rect x={68} y={44} width={8} height={82} fill={pal.pathEdge} />
+          <rect x={69} y={44} width={6} height={82} fill={pal.path} />
+        </g>
+      )}
+
+      {kind !== 'crescent_harbor' && seed % 4 === 2 && (
+        <g>
+          {/* Winding stepped trail from Ruinas -> Dojo -> Taberna -> Muelle */}
+          <rect x={58} y={50} width={128} height={7} fill={pal.pathEdge} />
+          <rect x={58} y={51} width={128} height={5} fill={pal.path} />
+          <rect x={176} y={50} width={10} height={76} fill={pal.pathEdge} />
+          <rect x={178} y={50} width={6} height={76} fill={pal.path} />
+          <rect x={66} y={120} width={232} height={7} fill={pal.pathEdge} />
+          <rect x={66} y={121} width={232} height={5} fill={pal.path} />
+          <rect x={282} y={44} width={8} height={82} fill={pal.pathEdge} />
+          <rect x={283} y={44} width={6} height={82} fill={pal.path} />
+        </g>
+      )}
+
+      {kind !== 'crescent_harbor' && seed % 4 === 3 && (
+        <g>
+          {/* Harbor esplanade & upper ridge path */}
+          <rect x={56} y={48} width={246} height={7} fill={pal.pathEdge} />
+          <rect x={56} y={49} width={246} height={5} fill={pal.path} />
+          <rect x={64} y={118} width={236} height={7} fill={pal.pathEdge} />
+          <rect x={64} y={119} width={236} height={5} fill={pal.path} />
+          <rect x={120} y={48} width={8} height={76} fill={pal.pathEdge} />
+          <rect x={121} y={48} width={6} height={76} fill={pal.path} />
+          <rect x={236} y={48} width={8} height={76} fill={pal.pathEdge} />
+          <rect x={237} y={48} width={6} height={76} fill={pal.path} />
+        </g>
+      )}
+
+      {/* Wooden Harbor Pier */}
+      <rect x={330} y={118} width={28} height={11} fill="#451a03" />
+      <rect x={330} y={120} width={26} height={7} fill="#92400e" />
+      <rect x={334} y={121} width={4} height={5} fill="#b45309" />
+      <rect x={342} y={121} width={4} height={5} fill="#b45309" />
+      <rect x={350} y={121} width={4} height={5} fill="#b45309" />
+      <rect x={338} y={116} width={2} height={13} fill="#291206" />
+      <rect x={352} y={116} width={2} height={13} fill="#291206" />
+
+      {/* 3. CANON ICONIC ISLAND LANDMARKS */}
+      {island.id === 'elbaph' && (
+        <g>
+          {[
+            [88, 92], [94, 95], [100, 92], [92, 100], [98, 102],
+            [134, 96], [140, 99], [145, 95],
+            [236, 94], [242, 97], [248, 93], [240, 102], [246, 104],
+            [254, 96], [260, 100], [252, 108], [234, 108],
+            [184, 106], [190, 109],
+          ].map(([px, py], i) => (
+            <PixelPineTree key={`pin-${i}`} x={px} y={py} />
+          ))}
+
+          {[
+            { hx: 94, hy: 66, s1: '#2563eb', s2: '#dc2626' },
+            { hx: 118, hy: 58, s1: '#eab308', s2: '#16a34a' },
+            { hx: 142, hy: 62, s1: '#dc2626', s2: '#0d9488' },
+            { hx: 106, hy: 96, s1: '#2563eb', s2: '#eab308' },
+            { hx: 138, hy: 98, s1: '#16a34a', s2: '#dc2626' },
+          ].map((hut, idx) => (
+            <g key={`vhut-${idx}`}>
+              <rect x={hut.hx - 1} y={hut.hy + 14} width={18} height={2} fill="rgba(6, 12, 24, 0.35)" />
+              <rect x={hut.hx + 1} y={hut.hy + 7} width={14} height={7} fill="#6b3e1b" />
+              <polygon points={`${hut.hx},${hut.hy + 8} ${hut.hx + 8},${hut.hy} ${hut.hx + 16},${hut.hy + 8}`} fill="#92400e" />
+              <polygon points={`${hut.hx + 2},${hut.hy + 8} ${hut.hx + 8},${hut.hy + 2} ${hut.hx + 14},${hut.hy + 8}`} fill="#b45309" />
+              <rect x={hut.hx + 6} y={hut.hy + 9} width={4} height={5} fill="#ea580c" />
+              <rect x={hut.hx + 2} y={hut.hy + 10} width={2} height={2} fill={hut.s1} />
+              <rect x={hut.hx + 12} y={hut.hy + 10} width={2} height={2} fill={hut.s2} />
+            </g>
+          ))}
+
+          <g>
+            <rect x={196} y={114} width={36} height={5} fill="rgba(6, 12, 24, 0.35)" />
+            <rect x={198} y={108} width={32} height={7} fill="#451a03" />
+            <rect x={202} y={102} width={24} height={11} fill="#5c3317" />
+            <rect x={204} y={56} width={20} height={56} fill="#5c3317" />
+            <rect x={207} y={56} width={6} height={56} fill="#78350f" />
+            <rect x={215} y={56} width={5} height={56} fill="#4a250d" />
+            <polygon points="204,64 176,48 184,48 208,58" fill="#5c3317" />
+            <polygon points="224,64 252,48 244,48 220,58" fill="#5c3317" />
+            <rect x={211} y={104} width={6} height={9} fill="#1c0d06" />
+            <rect x={158} y={32} width={110} height={24} fill="#0f3d23" />
+            <rect x={162} y={24} width={102} height={26} fill="#14532d" />
+            <rect x={170} y={17} width={86} height={24} fill="#15803d" />
+            <rect x={182} y={13} width={62} height={14} fill="#166534" />
+            <rect x={194} y={11} width={38} height={6} fill="#22c55e" />
+            {[
+              { tx: 168, ty: 26, roof: '#0d9488' },
+              { tx: 208, ty: 16, roof: '#7c3aed' },
+              { tx: 246, ty: 26, roof: '#dc2626' },
+              { tx: 184, ty: 40, roof: '#d97706' },
+              { tx: 236, ty: 40, roof: '#dc2626' },
+            ].map((th, i) => (
+              <g key={`th-${i}`}>
+                <rect x={th.tx} y={th.ty + 4} width={10} height={6} fill="#e2e8f0" />
+                <polygon points={`${th.tx - 1},${th.ty + 4} ${th.tx + 5},${th.ty} ${th.tx + 11},${th.ty + 4}`} fill={th.roof} />
+                <rect x={th.tx + 4} y={th.ty + 6} width={2} height={4} fill="#f59e0b" />
+              </g>
+            ))}
+          </g>
+        </g>
+      )}
+
+      {island.id === 'pais-de-wano' && (
+        <g>
+          <PixelMountain x={86} y={14} w={46} h={42} bodyColor="#64748b" shadeColor="#475569" capColor="#f8fafc" />
+          <rect x={218} y={54} width={60} height={34} fill="#5c4738" />
+          <rect x={222} y={52} width={52} height={6} fill="#3f6212" />
+          <rect x={228} y={56} width={5} height={34} fill="#7dd3fc" />
+          <rect x={245} y={56} width={5} height={24} fill="#7dd3fc" />
+          <rect x={262} y={56} width={5} height={26} fill="#7dd3fc" />
+          <rect x={243} y={77} width={11} height={11} fill="#29160e" />
+          <rect x={240} y={73} width={17} height={2} fill="#dc2626" />
+          <rect x={226} y={90} width={12} height={58} fill="#0284c7" />
+          <rect x={222} y={102} width={20} height={4} fill="#b91c1c" />
+          <rect x={230} y={40} width={36} height={12} fill="#f8fafc" />
+          <rect x={226} y={37} width={44} height={4} fill="#1e293b" />
+          <rect x={235} y={29} width={26} height={8} fill="#f8fafc" />
+          <rect x={231} y={26} width={34} height={4} fill="#1e293b" />
+          <polygon points="236,26 248,18 260,26" fill="#0f172a" />
+          <PixelHouse x={102} y={66} roofColor="#dc2626" wallColor="#f8fafc" />
+          <PixelHouse x={122} y={56} roofColor="#1e293b" wallColor="#f8fafc" />
+          <PixelHouse x={96} y={98} roofColor="#dc2626" wallColor="#f8fafc" />
+          <PixelHouse x={156} y={64} roofColor="#1e293b" wallColor="#f8fafc" />
+          <PixelPalmTree x={140} y={62} sakura />
+          <PixelPalmTree x={178} y={66} sakura />
+          <PixelPalmTree x={282} y={62} sakura />
+        </g>
+      )}
+
+      {island.id === 'egghead' && (
+        <g>
+          <rect x={146} y={58} width={68} height={18} fill="#e0f2fe" />
+          <rect x={136} y={62} width={88} height={12} fill="#f8fafc" />
+          <rect x={176} y={74} width={8} height={38} fill="rgba(34, 211, 238, 0.36)" />
+          <rect x={160} y={48} width={40} height={14} fill="#f472b6" />
+          <rect x={166} y={24} width={28} height={16} fill="#ec4899" />
+          <rect x={128} y={96} width={16} height={10} fill="#38bdf8" />
+          <rect x={148} y={96} width={16} height={10} fill="#f43f5e" />
+          <rect x={196} y={96} width={16} height={10} fill="#facc15" />
+          <rect x={216} y={96} width={16} height={10} fill="#a855f7" />
+        </g>
+      )}
+
+      {(island.id === 'marineford' || island.id === 'nuevo-marineford') && (
+        <g>
+          {/* Tiered Marine HQ Citadel framed cleanly on the bay quay below Dojo */}
+          <rect x={118} y={66} width={124} height={30} fill="#f8fafc" />
+          <rect x={112} y={62} width={136} height={5} fill={island.id === 'nuevo-marineford' ? '#0284c7' : '#1d4ed8'} />
+          <rect x={144} y={54} width={72} height={9} fill="#e2e8f0" />
+          <rect x={140} y={50} width={80} height={4} fill={island.id === 'nuevo-marineford' ? '#0284c7' : '#1d4ed8'} />
+          <rect x={170} y={78} width={20} height={18} fill="#1e293b" />
+          {/* Execution scaffold & Oris Bell */}
+          <rect x={92} y={70} width={14} height={22} fill="#cbd5e1" />
+          <rect x={252} y={70} width={14} height={22} fill="#cbd5e1" />
+          <circle cx={259} cy={65} r={5} fill="#facc15" />
+          {/* Twin moored Marine battleships inside crescent bay */}
+          <rect x={142} y={128} width={22} height={8} fill="#e2e8f0" />
+          <rect x={149} y={118} width={8} height={10} fill="#ffffff" />
+          <rect x={196} y={128} width={22} height={8} fill="#e2e8f0" />
+          <rect x={203} y={118} width={8} height={10} fill="#ffffff" />
+        </g>
+      )}
+
+      {island.id === 'impel-down' && (
+        <g>
+          <circle cx={180} cy={84} r={34} fill="#1e293b" />
+          <rect x={150} y={44} width={60} height={56} fill="#475569" />
+          <rect x={146} y={40} width={68} height={6} fill="#991b1b" />
+          <rect x={164} y={26} width={32} height={14} fill="#64748b" />
+          <rect x={160} y={22} width={40} height={4} fill="#dc2626" />
+          <rect x={174} y={14} width={12} height={8} fill="#facc15" />
+          <rect x={168} y={66} width={24} height={34} fill="#0f172a" />
+        </g>
+      )}
+
+      {island.id === 'dressrosa' && (
+        <g>
+          {/* Corrida Colosseum */}
+          <circle cx={124} cy={90} r={24} fill="#cbd5e1" />
+          <circle cx={124} cy={90} r={17} fill="#ef4444" />
+          <circle cx={124} cy={90} r={10} fill="#e7c791" />
+          {/* King's Plateau & Royal Smile Palace */}
+          <PixelMountain x={194} y={56} w={42} h={32} bodyColor="#94a3b8" shadeColor="#64748b" capColor="#cbd5e1" />
+          <rect x={204} y={46} width={22} height={14} fill="#f8fafc" />
+          <rect x={206} y={41} width={18} height={5} fill="#f59e0b" />
+          {/* Flower Hill Sunflowers bed */}
+          <rect x={218} y={96} width={36} height={16} fill="#15803d" />
+          {[224, 232, 240, 248].map((fx) => (
+            <g key={`sf-${fx}`}>
+              <rect x={fx - 1} y={100} width={2} height={6} fill="#166534" />
+              <circle cx={fx} cy={99} r={3} fill="#facc15" />
+              <circle cx={fx} cy={99} r={1.2} fill="#78350f" />
+            </g>
+          ))}
+          <PixelHouse x={158} y={96} roofColor="#e11d48" wallColor="#fef3c7" />
+        </g>
+      )}
+
+      {island.id === 'totto-land' && (
+        <g>
+          {/* Chocolate river + Whole Cake Chateau */}
+          <rect x={96} y={102} width={168} height={9} fill="#7c2d12" />
+          <rect x={146} y={62} width={68} height={34} fill="#fce7f3" />
+          <rect x={142} y={58} width={76} height={5} fill="#ec4899" />
+          <rect x={156} y={44} width={48} height={14} fill="#fbcfe8" />
+          <rect x={152} y={40} width={56} height={5} fill="#db2777" />
+          <rect x={170} y={28} width={20} height={12} fill="#f9a8d4" />
+          <rect x={126} y={66} width={12} height={28} fill="#f59e0b" />
+          <rect x={222} y={66} width={12} height={28} fill="#f59e0b" />
+          <PixelPalmTree x={108} y={84} candy />
+          <PixelPalmTree x={246} y={84} candy />
+        </g>
+      )}
+
+      {island.id === 'punk-hazard' && (
+        <g>
+          <PixelMountain x={92} y={48} w={46} h={42} bodyColor="#431407" shadeColor="#291714" capColor="#f97316" />
+          <circle cx={115} cy={46} r={5} fill="#fde047" />
+          <PixelMountain x={220} y={44} w={46} h={46} bodyColor="#7dd3fc" shadeColor="#38bdf8" capColor="#ffffff" />
+          <rect x={164} y={68} width={32} height={22} fill="#94a3b8" />
+          <circle cx={180} cy={78} r={6} fill="#f8fafc" />
+        </g>
+      )}
+
+      {island.id === 'skypiea' && (
+        <g>
+          {/* Upper Yard emerald forest + Giant Jack + Golden Bell of Shandora */}
+          <circle cx={154} cy={82} r={24} fill="#15803d" />
+          <rect x={148} y={32} width={12} height={50} fill="#22c55e" />
+          <circle cx={154} cy={30} r={14} fill="#4ade80" />
+          <rect x={204} y={56} width={28} height={26} fill="#ca8a04" />
+          <circle cx={218} cy={66} r={10} fill="#fde047" />
+          <PixelHouse x={110} y={96} roofColor="#38bdf8" wallColor="#f8fafc" />
+        </g>
+      )}
+
+      {island.id === 'thriller-bark' && (
+        <g>
+          {/* Giant Mainmast + Gothic Thriller Mansion + Dead Pines */}
+          <rect x={176} y={24} width={8} height={82} fill="#44403c" />
+          <rect x={140} y={30} width={80} height={24} fill="#52525b" />
+          <rect x={146} y={64} width={68} height={34} fill="#312e81" />
+          <rect x={164} y={48} width={32} height={18} fill="#4338ca" />
+          <rect x={142} y={60} width={12} height={12} fill="#dc2626" />
+          <rect x={206} y={60} width={12} height={12} fill="#dc2626" />
+          <PixelPineTree x={112} y={88} />
+          <PixelPineTree x={236} y={88} />
+        </g>
+      )}
+
+      {island.id === 'enies-lobby' && (
+        <g>
+          <rect x={156} y={42} width={48} height={54} fill="#f8fafc" />
+          <rect x={150} y={36} width={60} height={7} fill="#334155" />
+          <rect x={168} y={24} width={24} height={12} fill="#e2e8f0" />
+          <rect x={136} y={96} width={88} height={12} fill="#cbd5e1" />
+        </g>
+      )}
+
+      {(island.id === 'onigashima' || island.id === 'hachinosu') && (
+        <g>
+          <circle cx={180} cy={78} r={28} fill={island.id === 'onigashima' ? '#334155' : '#cbd5e1'} />
+          <circle cx={168} cy={76} r={6} fill={island.id === 'onigashima' ? '#ef4444' : '#0f172a'} />
+          <circle cx={192} cy={76} r={6} fill={island.id === 'onigashima' ? '#ef4444' : '#0f172a'} />
+          <rect x={164} y={94} width={32} height={12} fill="#1e293b" />
+          {island.id === 'onigashima' ? (
+            <>
+              <polygon points="154,64 134,36 164,54" fill="#f8fafc" />
+              <polygon points="206,64 226,36 196,54" fill="#f8fafc" />
+            </>
+          ) : (
+            <rect x={170} y={82} width={20} height={16} fill="#38bdf8" />
+          )}
+        </g>
+      )}
+
+      {island.id === 'isla-drum' && (
+        <g>
+          {[
+            [112, 88, 36],
+            [144, 84, 44],
+            [178, 82, 48],
+            [212, 86, 42],
+            [244, 90, 34],
+          ].map(([mx, my, mh], i) => (
+            <g key={`dr-${i}`}>
+              <rect x={mx - 10} y={my - mh} width={20} height={mh} fill="#64748b" />
+              <rect x={mx - 11} y={my - mh} width={22} height={7} fill="#f8fafc" />
+            </g>
+          ))}
+          <rect x={166} y={24} width={24} height={12} fill="#f8fafc" />
+          <rect x={162} y={20} width={32} height={4} fill="#dc2626" />
+          <PixelPalmTree x={108} y={94} sakura />
+          <PixelPalmTree x={246} y={94} sakura />
+        </g>
+      )}
+
+      {island.id === 'little-garden' && (
+        <g>
+          <PixelMountain x={102} y={50} w={36} h={38} bodyColor="#334155" shadeColor="#1e293b" capColor="#ef4444" />
+          <PixelMountain x={222} y={52} w={36} h={36} bodyColor="#475569" shadeColor="#334155" capColor="#f97316" />
+          <circle cx={180} cy={92} r={14} fill="#e2e8f0" />
+          <PixelPineTree x={144} y={96} />
+          <PixelPineTree x={208} y={96} />
+        </g>
+      )}
+
+      {island.id === 'islas-conomi' && (
+        <g>
+          <rect x={204} y={54} width={30} height={36} fill="#e2e8f0" />
+          <rect x={198} y={48} width={42} height={6} fill="#0284c7" />
+          <rect x={212} y={36} width={14} height={12} fill="#dc2626" />
+          <circle cx={136} cy={78} r={12} fill="#15803d" />
+          <circle cx={132} cy={76} r={2} fill="#f97316" />
+          <circle cx={140} cy={80} r={2} fill="#f97316" />
+          <PixelHouse x={116} y={96} roofColor="#0284c7" wallColor="#fef3c7" />
+        </g>
+      )}
+
+      {island.id === 'islas-polestar' && (
+        <g>
+          <rect x={154} y={84} width={52} height={22} fill="#cbd5e1" />
+          <rect x={170} y={52} width={20} height={32} fill="#78350f" />
+          <rect x={166} y={46} width={28} height={6} fill="#b45309" />
+          <PixelHouse x={116} y={94} roofColor="#dc2626" wallColor="#fef3c7" />
+          <PixelHouse x={224} y={94} roofColor="#1d4ed8" wallColor="#f8fafc" />
+        </g>
+      )}
+
+      {island.id === 'isla-cactus' && (
+        <g>
+          {[126, 180, 232].map((cxPos, idx) => (
+            <g key={`cac-${idx}`}>
+              <rect x={cxPos - 7} y={50 - (idx === 1 ? 10 : 0)} width={14} height={42 + (idx === 1 ? 10 : 0)} fill="#15803d" />
+              <rect x={cxPos - 14} y={62} width={7} height={8} fill="#16a34a" />
+              <rect x={cxPos + 7} y={66} width={7} height={8} fill="#16a34a" />
+            </g>
+          ))}
+          <PixelHouse x={150} y={96} roofColor="#d97706" wallColor="#fef3c7" />
+        </g>
+      )}
+
+      {island.id === 'reino-germa' && (
+        <g>
+          {[
+            [132, 74, '#2563eb'],
+            [176, 62, '#16a34a'],
+            [220, 74, '#dc2626'],
+            [176, 94, '#facc15'],
+          ].map(([gx, gy, col], idx) => (
+            <g key={`gm-${idx}`}>
+              <rect x={Number(gx) - 14} y={Number(gy) - 8} width={28} height={18} fill="#475569" />
+              <rect x={Number(gx) - 10} y={Number(gy) - 15} width={20} height={8} fill={String(col)} />
+            </g>
+          ))}
+        </g>
+      )}
+
+      {island.id === 'tequila-wolf' && (
+        <g>
+          <rect x={100} y={68} width={160} height={14} fill="#cbd5e1" />
+          <rect x={108} y={54} width={20} height={38} fill="#475569" />
+          <rect x={232} y={54} width={20} height={38} fill="#475569" />
+          <PixelHouse x={166} y={56} roofColor="#334155" wallColor="#cbd5e1" />
+        </g>
+      )}
+
+      {island.id === 'isla-kuraigana' && (
+        <g>
+          <rect x={152} y={54} width={56} height={42} fill="#334155" />
+          <rect x={146} y={40} width={14} height={56} fill="#1e293b" />
+          <rect x={200} y={40} width={14} height={56} fill="#1e293b" />
+          <rect x={170} y={32} width={20} height={24} fill="#475569" />
+          <rect x={118} y={82} width={4} height={22} fill="#cbd5e1" />
+          <rect x={112} y={88} width={16} height={4} fill="#cbd5e1" />
+        </g>
+      )}
+
+      {island.id === 'isla-raijin' && (
+        <g>
+          {[134, 180, 226].map((lx, i) => (
+            <g key={`lt-${i}`}>
+              <rect x={lx - 3} y={42} width={6} height={44} fill="#facc15" />
+              <circle cx={lx} cy={40} r={5} fill="#fef08a" />
+            </g>
+          ))}
+          <PixelHouse x={164} y={92} roofColor="#7c3aed" wallColor="#e2e8f0" />
+        </g>
+      )}
+
+      {island.id === 'isla-lodestar' && (
+        <g>
+          <circle cx={180} cy={84} r={24} fill="#334155" />
+          <rect x={148} y={81} width={64} height={6} fill="#facc15" />
+          <rect x={177} y={52} width={6} height={64} fill="#facc15" />
+          <circle cx={180} cy={84} r={8} fill="#38bdf8" />
+        </g>
+      )}
+
+      {island.id === 'amazon-lily' && (
+        <g>
+          <PixelMountain x={152} y={44} w={56} h={42} bodyColor="#475569" shadeColor="#334155" capColor="#cbd5e1" />
+          <PixelHouse x={164} y={84} roofColor="#be185d" wallColor="#f8fafc" />
+          <PixelPalmTree x={122} y={92} />
+          <PixelPalmTree x={232} y={92} />
+        </g>
+      )}
+
+      {island.id === 'isla-momoiro' && (
+        <g>
+          <rect x={152} y={62} width={56} height={34} fill="#fbcfe8" />
+          <rect x={148} y={56} width={64} height={7} fill="#ec4899" />
+          <rect x={168} y={42} width={24} height={14} fill="#db2777" />
+          <PixelPalmTree x={118} y={92} sakura />
+          <PixelPalmTree x={234} y={92} sakura />
+        </g>
+      )}
+
+      {island.id === 'jaya' && (
+        <g>
+          <PixelHouse x={112} y={92} roofColor="#b45309" wallColor="#fde68a" />
+          <PixelHouse x={136} y={86} roofColor="#dc2626" wallColor="#fef3c7" />
+          <circle cx={224} cy={78} r={20} fill="#cbd5e1" />
+          <circle cx={216} cy={76} r={5} fill="#0f172a" />
+        </g>
+      )}
+
+      {island.id === 'reino-torino' && (
+        <g>
+          <rect x={170} y={76} width={20} height={32} fill="#78350f" />
+          <circle cx={180} cy={62} r={34} fill="#15803d" />
+          <circle cx={166} cy={56} r={18} fill="#22c55e" />
+        </g>
+      )}
+
+      {island.id === 'baltigo' && (
+        <g>
+          <PixelMountain x={112} y={52} w={42} h={40} bodyColor="#d6d3d1" shadeColor="#a8a29e" capColor="#f5f5f4" />
+          <PixelMountain x={206} y={56} w={40} h={36} bodyColor="#e7e5e4" shadeColor="#d6d3d1" capColor="#ffffff" />
+          <rect x={164} y={72} width={32} height={24} fill="#44403c" />
+          <rect x={174} y={60} width={12} height={12} fill="#0d9488" />
+        </g>
+      )}
+
+      {island.id === 'mary-geoise' && (
+        <g>
+          <rect x={144} y={62} width={72} height={36} fill="#f8fafc" />
+          <rect x={152} y={48} width={56} height={14} fill="#fde047" />
+          <rect x={168} y={32} width={24} height={16} fill="#ffffff" />
+        </g>
+      )}
+
+      {island.id === 'islas-kinoko' && (
+        <g>
+          {[
+            [132, 82, '#ef4444'],
+            [180, 74, '#a855f7'],
+            [228, 84, '#ec4899'],
+          ].map(([mx, my, col], i) => (
+            <g key={`kn-${i}`}>
+              <rect x={Number(mx) - 5} y={Number(my)} width={10} height={20} fill="#fef3c7" />
+              <circle cx={Number(mx)} cy={Number(my) - 4} r={15} fill={String(col)} />
+              <circle cx={Number(mx) - 5} cy={Number(my) - 7} r={3} fill="#ffffff" />
+              <circle cx={Number(mx) + 5} cy={Number(my) - 3} r={3} fill="#ffffff" />
+            </g>
+          ))}
+        </g>
+      )}
+
+      {island.id === 'weatheria' && (
+        <g>
+          <circle cx={180} cy={78} r={22} fill="#93c5fd" />
+          <rect x={146} y={74} width={68} height={6} fill="#f59e0b" />
+          <rect x={177} y={44} width={6} height={54} fill="#f59e0b" />
+        </g>
+      )}
+
+      {island.id === 'anillos-largos' && (
+        <g>
+          <PixelPineTree x={116} y={84} />
+          <PixelPineTree x={176} y={76} />
+          <PixelPineTree x={236} y={84} />
+          <PixelHouse x={156} y={96} roofColor="#eab308" wallColor="#fef3c7" />
+        </g>
+      )}
+
+      {island.id === 'mini-baratie' && (
+        <g>
+          <rect x={136} y={66} width={88} height={32} fill="#78350f" />
+          <rect x={156} y={50} width={48} height={22} fill="#fef3c7" />
+          <rect x={152} y={46} width={56} height={6} fill="#0284c7" />
+          <circle cx={228} cy={82} r={11} fill="#facc15" />
+        </g>
+      )}
+
+      {island.id === 'mini-shell-town' && (
+        <g>
+          <rect x={154} y={58} width={52} height={34} fill="#f8fafc" />
+          <rect x={150} y={52} width={60} height={6} fill="#1d4ed8" />
+          <PixelHouse x={116} y={96} roofColor="#dc2626" wallColor="#fef3c7" />
+        </g>
+      )}
+
+      {island.id === 'mini-estacion-shift' && (
+        <g>
+          <rect x={80} y={98} width={200} height={4} fill="#475569" />
+          <rect x={170} y={52} width={16} height={42} fill="#f8fafc" />
+          <rect x={166} y={46} width={24} height={6} fill="#dc2626" />
+          <circle cx={178} cy={40} r={5} fill="#fde047" />
+        </g>
+      )}
+
+      {island.id === 'mini-ohara' && (
+        <g>
+          <rect x={168} y={68} width={24} height={36} fill="#78350f" />
+          <circle cx={180} cy={56} r={28} fill="#15803d" />
+          <circle cx={166} cy={52} r={14} fill="#22c55e" />
+        </g>
+      )}
+
+      {island.id === 'reino-arabasta' && (
+        <g>
+          <PixelMountain x={92} y={56} w={30} h={22} bodyColor="#b45309" shadeColor="#78350f" capColor="#fde68a" />
+          <rect x={142} y={94} width={28} height={16} fill="#fef3c7" />
+          <rect x={146} y={88} width={20} height={6} fill="#eab308" />
+          <rect x={154} y={83} width={4} height={5} fill="#fde047" />
+          <rect x={192} y={56} width={10} height={74} fill="#0ea5e9" />
+          <rect x={195} y={56} width={4} height={74} fill="#7dd3fc" />
+          <PixelHouse x={108} y={98} roofColor="#d97706" wallColor="#fef3c7" />
+          <PixelHouse x={212} y={98} roofColor="#b45309" wallColor="#fde68a" />
+        </g>
+      )}
+
+      {island.id === 'water-7' && (
+        <g>
+          <rect x={126} y={58} width={108} height={8} fill="#0284c7" />
+          <rect x={126} y={60} width={108} height={4} fill="#38bdf8" />
+          <rect x={174} y={66} width={12} height={52} fill="#0284c7" />
+          <PixelHouse x={108} y={96} roofColor="#0284c7" wallColor="#f8fafc" />
+          <PixelHouse x={128} y={96} roofColor="#0369a1" wallColor="#e2e8f0" />
+          <PixelHouse x={208} y={96} roofColor="#0284c7" wallColor="#f8fafc" />
+          <PixelHouse x={228} y={96} roofColor="#0369a1" wallColor="#e2e8f0" />
+        </g>
+      )}
+
+      {island.id === 'archipielago-sabaody' && (
+        <g>
+          {[114, 224].map((mx) => (
+            <g key={`mang-${mx}`}>
+              <rect x={mx + 6} y={62} width={12} height={42} fill="#78350f" />
+              <rect x={mx} y={50} width={24} height={14} fill="#15803d" />
+              <rect x={mx + 4} y={44} width={16} height={8} fill="#22c55e" />
+            </g>
+          ))}
+          <PixelHouse x={144} y={98} roofColor="#ec4899" wallColor="#fef3c7" />
+          <PixelHouse x={204} y={98} roofColor="#0d9488" wallColor="#f8fafc" />
+        </g>
+      )}
+
+      {island.id === 'zou' && (
+        <g>
+          <rect x={166} y={64} width={28} height={36} fill="#334155" />
+          <rect x={160} y={54} width={40} height={14} fill="#15803d" />
+          <rect x={166} y={48} width={28} height={8} fill="#22c55e" />
+          <PixelHouse x={118} y={96} roofColor="#a3e635" wallColor="#cbd5e1" />
+          <PixelHouse x={222} y={96} roofColor="#65a30d" wallColor="#cbd5e1" />
+        </g>
+      )}
+
+      {/* BIOME-SPECIFIC PIXEL AMBIANCE PROPS FOR ISLANDS WITHOUT CUSTOM CENTER */}
+      {!hasCustomMiddle && island.biome === 'village' && (
+        <g>
+          <PixelMountain x={92} y={54} w={26} h={20} bodyColor="#64748b" shadeColor="#475569" capColor="#cbd5e1" />
+          <PixelHouse x={106} y={96} roofColor="#dc2626" wallColor="#f8fafc" />
+          <PixelHouse x={208} y={62} roofColor="#0284c7" wallColor="#fef3c7" />
+          <PixelHouse x={232} y={96} roofColor="#d97706" wallColor="#f8fafc" />
+          <PixelPalmTree x={36} y={96} />
+          <PixelPalmTree x={214} y={94} />
+          <PixelPalmTree x={306} y={96} />
+        </g>
+      )}
+
+      {!hasCustomMiddle && island.biome === 'pagoda' && (
+        <g>
+          <PixelPalmTree x={36} y={96} sakura />
+          <PixelPalmTree x={214} y={94} sakura />
+          <PixelPalmTree x={306} y={96} sakura />
+          <rect x={142} y={96} width={16} height={2} fill="#dc2626" />
+          <rect x={144} y={98} width={2} height={11} fill="#991b1b" />
+          <rect x={154} y={98} width={2} height={11} fill="#991b1b" />
+          <PixelHouse x={112} y={96} roofColor="#1e293b" wallColor="#f8fafc" />
+        </g>
+      )}
+
+      {!hasCustomMiddle && island.biome === 'desert' && (
+        <g>
+          <rect x={208} y={94} width={26} height={12} fill="#0284c7" />
+          <rect x={210} y={96} width={22} height={8} fill="#38bdf8" />
+          <PixelPalmTree x={232} y={86} />
+          <PixelHouse x={122} y={64} roofColor="#d97706" wallColor="#fef3c7" />
+        </g>
+      )}
+
+      {!hasCustomMiddle && island.biome === 'volcano' && (
+        <g>
+          <PixelMountain x={100} y={56} w={30} h={22} bodyColor="#334155" shadeColor="#1e293b" capColor="#ea580c" />
+          <rect x={208} y={94} width={24} height={12} fill="#991b1b" />
+          <rect x={212} y={96} width={16} height={8} fill="#ea580c" />
+          <PixelPineTree x={238} y={66} />
+        </g>
+      )}
+
+      {!hasCustomMiddle && island.biome === 'sky' && (
+        <g>
+          <PixelMountain x={96} y={56} w={26} h={20} bodyColor="#94a3b8" shadeColor="#64748b" capColor="#ffffff" />
+          <rect x={212} y={94} width={14} height={13} fill="#b45309" />
+          <rect x={215} y={96} width={8} height={8} fill="#eab308" />
+          <PixelHouse x={122} y={96} roofColor="#38bdf8" wallColor="#f8fafc" />
+        </g>
+      )}
+
+      {!hasCustomMiddle && island.biome === 'candy' && (
+        <g>
+          <PixelPalmTree x={36} y={96} candy />
+          <PixelPalmTree x={214} y={94} candy />
+          <PixelPalmTree x={306} y={96} candy />
+          <PixelHouse x={110} y={96} roofColor="#ec4899" wallColor="#fdf2f8" />
+        </g>
+      )}
+
+      {!hasCustomMiddle && island.biome === 'marine' && (
+        <g>
+          <PixelMountain x={94} y={56} w={26} h={20} bodyColor="#475569" shadeColor="#334155" capColor="#cbd5e1" />
+          <PixelHouse x={114} y={96} roofColor="#1d4ed8" wallColor="#f1f5f9" />
+          <PixelHouse x={238} y={96} roofColor="#1e40af" wallColor="#e2e8f0" />
+        </g>
+      )}
+
+      {!hasCustomMiddle &&
+        (island.biome === 'colosseum' || island.biome === 'fortress' || island.biome === 'treasure') && (
+          <g>
+            <PixelMountain x={96} y={56} w={26} h={20} bodyColor="#64748b" shadeColor="#475569" capColor="#94a3b8" />
+            <PixelPalmTree x={36} y={96} />
+            <PixelPalmTree x={306} y={96} />
+            <PixelHouse x={114} y={96} roofColor="#dc2626" wallColor="#f8fafc" />
+            <PixelHouse x={232} y={96} roofColor="#d97706" wallColor="#fef3c7" />
+          </g>
+        )}
+
+      {/* 4. BIOME-THEMED ZONE BUILDINGS (RUINAS, DOJO, JEFE, TABERNA, MUELLE) */}
+      {/* RUINAS */}
+      <g>
+        <rect x={46} y={44} width={36} height={3} fill="#1e293b" />
+        <rect x={48} y={26} width={32} height={18} fill={zoneAccent.ruina} />
+        <rect x={51} y={29} width={26} height={14} fill="#1e293b" />
+        <polygon points="46,24 64,16 82,24" fill="#64748b" />
+        <polygon points="50,24 64,18 78,24" fill="#94a3b8" />
+        <rect x={49} y={24} width={5} height={19} fill="#cbd5e1" />
+        <rect x={74} y={24} width={5} height={19} fill="#cbd5e1" />
+        <rect x={59} y={36} width={10} height={8} fill="#78350f" />
+        <rect x={60} y={35} width={8} height={3} fill="#facc15" />
       </g>
-    )}
-  </svg>
-));
+
+      {/* DOJO */}
+      {(() => {
+        const dx = island.id === 'elbaph' ? -58 : 0;
+        return (
+          <g transform={dx !== 0 ? `translate(${dx}, 0)` : undefined}>
+            <rect x={164} y={41} width={32} height={2} fill="#1e293b" />
+            <rect x={162} y={23} width={36} height={5} fill={zoneAccent.dojo} />
+            <polygon points="160,24 180,15 200,24" fill={zoneAccent.dojo} />
+            <polygon points="165,23 180,17 195,23" fill={zoneAccent.dojoLight} />
+            <rect x={177} y={14} width={6} height={2} fill="#facc15" />
+            <rect x={167} y={28} width={26} height={13} fill="#f1f5f9" />
+            <rect x={176} y={32} width={8} height={9} fill="#5c3317" />
+            <rect x={170} y={31} width={4} height={5} fill="#fde68a" />
+            <rect x={186} y={31} width={4} height={5} fill="#fde68a" />
+          </g>
+        );
+      })()}
+
+      {/* GUARIDA DEL JEFE */}
+      <g>
+        <rect x={274} y={44} width={36} height={3} fill="#090d16" />
+        <rect x={276} y={25} width={32} height={20} fill="#1e293b" />
+        <rect x={274} y={19} width={8} height={26} fill="#334155" />
+        <rect x={302} y={19} width={8} height={26} fill="#334155" />
+        <rect x={282} y={22} width={20} height={4} fill="#475569" />
+        <rect x={284} y={30} width={16} height={15} fill="#450a0a" />
+        <rect x={288} y={33} width={8} height={12} fill="#1c0606" />
+        <rect x={289} y={25} width={6} height={4} fill={zoneAccent.dojoLight} />
+      </g>
+
+      {/* TABERNA */}
+      <g>
+        <rect x={46} y={136} width={40} height={2} fill="#1e293b" />
+        <rect x={74} y={102} width={5} height={10} fill="#475569" />
+        <rect x={48} y={114} width={36} height={22} fill="#5c3317" />
+        <rect x={51} y={117} width={30} height={17} fill="#78350f" />
+        <polygon points="44,115 66,104 88,115" fill={zoneAccent.taberna} />
+        <polygon points="48,114 66,106 84,114" fill="#b45309" />
+        <rect x={54} y={121} width={7} height={6} fill="#fbbf24" />
+        <rect x={66} y={122} width={8} height={12} fill="#291206" />
+        <rect x={76} y={121} width={4} height={5} fill="#fbbf24" />
+      </g>
+
+      {/* MUELLE PUESTO PORTUARIO */}
+      <g>
+        <rect x={282} y={132} width={32} height={2} fill="#1e293b" />
+        <rect x={284} y={116} width={28} height={16} fill="#5c3317" />
+        <rect x={286} y={118} width={24} height={13} fill="#78350f" />
+        <polygon points="280,117 298,109 316,117" fill={zoneAccent.muelle} />
+        <rect x={282} y={115} width={32} height={3} fill={zoneAccent.muelle} />
+        <rect x={287} y={120} width={8} height={6} fill="#fde68a" />
+        <rect x={299} y={120} width={9} height={11} fill="#291206" />
+      </g>
+
+      {/* Fish-Man Island Submerged Ryugu Kingdom Bubble Dome & Sunlight Tree Eve */}
+      {island.isUnderwaterTrench && trenchSubmerged && (
+        <g>
+          <rect x={0} y={0} width={360} height={180} fill="rgba(2, 12, 34, 0.35)" />
+          <polygon points="154,0 206,0 226,110 134,110" fill="rgba(253, 224, 71, 0.14)" />
+          <ellipse cx={180} cy={90} rx={164} ry={82} fill="rgba(34, 211, 238, 0.08)" stroke="#67e8f9" strokeWidth="1.5" opacity="0.82" />
+          <ellipse cx={180} cy={90} rx={154} ry={75} fill="none" stroke="#f9a8d4" strokeWidth="1" strokeDasharray="4 3" opacity="0.55" />
+          <rect x={166} y={56} width={28} height={16} fill="#ec4899" />
+          <polygon points="162,57 180,44 198,57" fill="#0d9488" />
+          <rect x={176} y={40} width={8} height={6} fill="#facc15" />
+        </g>
+      )}
+
+      {/* Translucent Sky Rainbow Arch */}
+      {island.hasRainbow && (
+        <g opacity={island.id === 'elbaph' ? '0.66' : '0.58'} fill="none">
+          {[
+            { rOff: 0, color: '#ef4444' },
+            { rOff: 2, color: '#f97316' },
+            { rOff: 4, color: '#eab308' },
+            { rOff: 6, color: '#22c55e' },
+            { rOff: 8, color: '#38bdf8' },
+            { rOff: 10, color: '#a855f7' },
+          ].map((band) => (
+            <path
+              key={band.color}
+              d={`M ${30 + band.rOff} 106 A ${150 - band.rOff} ${98 - band.rOff * 0.55} 0 0 1 ${330 - band.rOff} 106`}
+              stroke={band.color}
+              strokeWidth="2"
+            />
+          ))}
+        </g>
+      )}
+    </svg>
+  );
+});
 
 export const IslandSceneView: React.FC<IslandSceneViewProps> = ({
   island,
@@ -1236,12 +1664,16 @@ export const IslandSceneView: React.FC<IslandSceneViewProps> = ({
   day = 1,
   minuteOfDay = 480,
   sidePanelOpen = true,
+  isPlayerDockedHere = true,
   sameIslandPeers,
   onSelectSpotMission,
   onMoveToSpot,
   onSelectNpcQuest,
   onChallengeMiniBoss,
   onCoatShipBubble,
+  onZoomOutToMap,
+  onSailToInspectedIsland,
+  onFocusMyShip,
 }) => {
   const boss = useMemo(() => getBossForIsland(island), [island]);
   const npcQuests = useMemo(() => getNpcsForIsland(island), [island]);
@@ -1261,7 +1693,7 @@ export const IslandSceneView: React.FC<IslandSceneViewProps> = ({
   const rank = getRankInfo(pirate.level || 1);
 
   const arrivedDay = pirate.arrivedDay ?? 1;
-  const daysOnIsland = Math.max(1, day - arrivedDay + 1);
+  const daysOnIsland = isPlayerDockedHere ? Math.max(1, day - arrivedDay + 1) : 0;
   const completedQuestSet = useMemo(
     () => new Set(pirate.completedQuestIds ?? []),
     [pirate.completedQuestIds]
@@ -1295,11 +1727,34 @@ export const IslandSceneView: React.FC<IslandSceneViewProps> = ({
   const [bubbleText, setBubbleText] = useState('...');
   const [ambientPhase, setAmbientPhase] = useState(0);
   const [trenchSubmerged, setTrenchSubmerged] = useState(false);
+  const [interiorZoom, setInteriorZoom] = useState<number>(ISLAND_ENTRY_ZOOM);
+  const zoomLatchRef = useRef(false);
   const walkTimeoutRef = useRef<number | null>(null);
 
   useEffect(() => {
     setTrenchSubmerged(false);
+    setInteriorZoom(ISLAND_ENTRY_ZOOM);
+    zoomLatchRef.current = false;
   }, [island.id]);
+
+  const applyInteriorZoom = (mult: number) => {
+    if (zoomLatchRef.current) return;
+    const rawNext = interiorZoom * mult;
+    const deltaDir: 'in' | 'out' = mult > 1 ? 'in' : 'out';
+    const res = evaluateIslandZoomTransition(interiorZoom, rawNext, deltaDir);
+    if (res.action === 'to_map') {
+      if (onZoomOutToMap) {
+        zoomLatchRef.current = true;
+        onZoomOutToMap(island);
+      }
+      return;
+    }
+    setInteriorZoom(res.zoom);
+  };
+
+  const handleWheelZoom = (e: React.WheelEvent<HTMLDivElement>) => {
+    applyInteriorZoom(e.deltaY < 0 ? 1.15 : 0.86);
+  };
 
   useEffect(() => {
     let t = 0;
@@ -1405,6 +1860,7 @@ export const IslandSceneView: React.FC<IslandSceneViewProps> = ({
   }, []);
 
   const handleZoneClick = (zone: ZoneCoord) => {
+    if (!isPlayerDockedHere) return;
     setIsWalking(true);
     setPos((prev) => {
       if (Math.abs(zone.standX - prev.x) > 0.5) {
@@ -1432,6 +1888,7 @@ export const IslandSceneView: React.FC<IslandSceneViewProps> = ({
       style={{
         backgroundColor: pal.oceanDeep,
       }}
+      onWheel={handleWheelZoom}
       data-testid="island-scene-view"
     >
       {/* Crisp 16-bit Pixel Ocean Tile Backdrop (memoized) */}
@@ -1476,20 +1933,24 @@ export const IslandSceneView: React.FC<IslandSceneViewProps> = ({
       >
         {/* Island Name, Size Tier, Multi-day Stay, Weather & Devil Fruit Debuff Strip */}
         <div className="pointer-events-none mb-2 flex flex-wrap items-center justify-center gap-1.5 max-w-[96%] shrink-0">
-          <div className="flex items-center gap-1.5 bg-[#081221]/92 border border-slate-600 px-2.5 py-0.5 text-[10px] sm:text-[11px] font-bold text-slate-100 whitespace-nowrap">
-            <Compass className="h-3 w-3 sm:h-3.5 sm:w-3.5 text-amber-300 shrink-0" />
+          <div className="flex items-center gap-1.5 rounded-lg bg-white/84 backdrop-blur-sm border border-white/80 px-2.5 py-0.5 text-[10px] sm:text-[11px] font-bold text-slate-900 shadow-sm whitespace-nowrap">
+            <Compass className="h-3 w-3 sm:h-3.5 sm:w-3.5 text-amber-700 shrink-0" />
             <span className="truncate">{island.name}</span>
-            <span className="text-slate-500">·</span>
-            <span className="text-sky-300 capitalize">{sizeTier}</span>
-            <span className="text-slate-500">·</span>
-            <span className="text-amber-200">
-              Día {daysOnIsland}/{recommendedDays}
-            </span>
+            <span className="text-slate-400">·</span>
+            <span className="text-sky-700 capitalize">{sizeTier}</span>
+            <span className="text-slate-400">·</span>
+            {isPlayerDockedHere ? (
+              <span className="text-amber-800">
+                Día {daysOnIsland}/{recommendedDays}
+              </span>
+            ) : (
+              <span className="text-teal-700">Inspeccionando</span>
+            )}
           </div>
 
           <div
             data-testid="island-weather-badge"
-            className="flex items-center gap-1.5 bg-[#081221]/92 border px-2 py-0.5 text-[10px] sm:text-[11px] font-bold text-slate-100 whitespace-nowrap"
+            className="flex items-center gap-1.5 rounded-lg bg-white/86 backdrop-blur-sm border px-2 py-0.5 text-[10px] sm:text-[11px] font-bold text-slate-900 shadow-sm whitespace-nowrap"
             style={{ borderColor: weather.color }}
           >
             {renderWeatherIcon(weather.type, 'h-3 w-3 sm:h-3.5 sm:w-3.5')}
@@ -1499,10 +1960,10 @@ export const IslandSceneView: React.FC<IslandSceneViewProps> = ({
           {weatherDebuff.active && (
             <div
               data-testid="island-weather-debuff"
-              className={`border px-2 py-0.5 text-[10px] font-black whitespace-nowrap ${
+              className={`rounded-lg border px-2 py-0.5 text-[10px] font-black shadow-sm backdrop-blur-sm whitespace-nowrap ${
                 weatherDebuff.combatDelta < 0
-                  ? 'border-rose-400 bg-rose-950/95 text-rose-200'
-                  : 'border-teal-400 bg-teal-950/95 text-teal-200'
+                  ? 'border-rose-300 bg-rose-50/92 text-rose-800'
+                  : 'border-teal-300 bg-teal-50/92 text-teal-800'
               }`}
             >
               {weatherDebuff.label}
@@ -1512,15 +1973,17 @@ export const IslandSceneView: React.FC<IslandSceneViewProps> = ({
 
         {/* Aspect-Locked 2:1 Coordinate Container so SVG Landmass and HTML Character % Positions Match 1:1 */}
         <div
-          className="relative flex flex-1 min-h-0 w-full items-center justify-center"
+          className="relative flex flex-1 min-h-0 w-full items-center justify-center overflow-hidden"
           style={{ containerType: 'size' }}
         >
           <div
-            className="relative"
+            className="relative transition-transform duration-150 ease-out"
             data-testid="island-stage-box"
             style={{
               width: 'min(100cqw, calc(100cqh * 2))',
               height: 'min(100cqh, calc(100cqw * 0.5))',
+              transform: `scale(${interiorZoom})`,
+              transformOrigin: 'center center',
             }}
           >
             {/* Memoized Static 16-Bit Pixel Island Tilemap SVG (360x180 exact 2:1) */}
@@ -1581,25 +2044,25 @@ export const IslandSceneView: React.FC<IslandSceneViewProps> = ({
             {island.isUnderwaterTrench && !trenchSubmerged && (
               <div
                 data-testid="fishman-trench-surface"
-                className="absolute inset-0 z-[32] flex flex-col items-center justify-center bg-[#030b1a]/92 border-2 border-cyan-500/45 p-4 text-center"
+                className="absolute inset-0 z-[32] flex flex-col items-center justify-center rounded-xl bg-sky-50/72 backdrop-blur-sm border-2 border-cyan-300 p-4 text-center"
               >
-                <div className="pointer-events-none absolute inset-3 border border-cyan-400/20 bg-[radial-gradient(circle_at_center,rgba(14,116,144,0.28)_0%,rgba(2,6,23,0.94)_68%)]" />
+                <div className="pointer-events-none absolute inset-3 rounded-lg border border-cyan-300/60 bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.88)_0%,rgba(224,242,254,0.78)_72%)]" />
                 <div className="relative z-10 max-w-md space-y-2.5">
-                  <div className="inline-flex items-center gap-1.5 border border-cyan-400/50 bg-cyan-950/90 px-2.5 py-0.5 text-[10px] font-black uppercase tracking-wider text-cyan-200">
+                  <div className="inline-flex items-center gap-1.5 rounded-md border border-cyan-400/60 bg-cyan-50/95 px-2.5 py-0.5 text-[10px] font-black uppercase tracking-wider text-cyan-800">
                     Fosa Abisal · 10,000 metros bajo el mar
                   </div>
-                  <h3 className="font-cinzel text-lg sm:text-xl font-black text-white">
+                  <h3 className="font-cinzel text-lg sm:text-xl font-black text-slate-900">
                     Fosa de los Hombres-Pez
                   </h3>
-                  <p className="text-xs text-slate-300 leading-relaxed">
-                    Desde la superficie solo se distingue un abismo oscuro bajo la Red Line. Desciende por la fosa para descubrir la cúpula submarina del Reino de Ryugu.
+                  <p className="text-xs text-slate-700 leading-relaxed">
+                    Desde la superficie solo se distingue la entrada abisal bajo la Red Line. Desciende por la fosa para descubrir la cúpula submarina del Reino de Ryugu.
                   </p>
                   <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
                     <span
-                      className={`border px-2.5 py-1 text-[11px] font-bold ${
+                      className={`rounded-md border px-2.5 py-1 text-[11px] font-bold ${
                         pirate.bubbleCoated
-                          ? 'border-emerald-400/60 bg-emerald-950/85 text-emerald-200'
-                          : 'border-amber-400/50 bg-amber-950/85 text-amber-200'
+                          ? 'border-emerald-300 bg-emerald-50/95 text-emerald-800'
+                          : 'border-amber-300 bg-amber-50/95 text-amber-800'
                       }`}
                     >
                       {pirate.bubbleCoated
@@ -1612,7 +2075,7 @@ export const IslandSceneView: React.FC<IslandSceneViewProps> = ({
                       type="button"
                       data-testid="fishman-descend-btn"
                       onClick={() => setTrenchSubmerged(true)}
-                      className="border-2 border-cyan-300 bg-cyan-500 px-4 py-2 text-xs font-black uppercase tracking-wide text-slate-950 hover:bg-cyan-400 transition-colors cursor-pointer"
+                      className="rounded-lg border-2 border-cyan-700 bg-cyan-600 px-4 py-2 text-xs font-black uppercase tracking-wide text-white hover:bg-cyan-500 transition-colors cursor-pointer"
                     >
                       Bajar por la fosa (10,000 m)
                     </button>
@@ -1627,24 +2090,27 @@ export const IslandSceneView: React.FC<IslandSceneViewProps> = ({
                 type="button"
                 data-testid="fishman-ascend-btn"
                 onClick={() => setTrenchSubmerged(false)}
-                className="absolute left-3 top-3 z-[32] border border-cyan-300/70 bg-[#041428]/95 px-2.5 py-1 text-[10px] font-bold text-cyan-200 hover:bg-cyan-900/90 cursor-pointer"
+                className="absolute left-3 top-3 z-[32] rounded-lg border border-cyan-300 bg-white/88 backdrop-blur-sm px-2.5 py-1 text-[10px] font-bold text-cyan-800 hover:bg-white cursor-pointer shadow-sm"
               >
                 ↑ Subir a la fosa
               </button>
             )}
 
             {/* Sabaody Dock Trigger: coat player's ship in Yarukiman bubble */}
-            {island.id === 'archipielago-sabaody' && !pirate.sailingToIslandId && onCoatShipBubble && (
+            {isPlayerDockedHere &&
+              island.id === 'archipielago-sabaody' &&
+              !pirate.sailingToIslandId &&
+              onCoatShipBubble && (
               <div className="absolute right-2 bottom-2 z-[26]">
                 <button
                   type="button"
                   data-testid="sabaody-bubble-btn"
                   onClick={onCoatShipBubble}
                   disabled={Boolean(pirate.bubbleCoated)}
-                  className={`border px-2.5 py-1 text-[10px] font-black transition-colors ${
+                  className={`rounded-lg border px-2.5 py-1 text-[10px] font-black transition-colors shadow-sm ${
                     pirate.bubbleCoated
-                      ? 'border-cyan-300/70 bg-cyan-950/90 text-cyan-200 cursor-default'
-                      : 'border-cyan-200 bg-cyan-500 text-slate-950 hover:bg-cyan-400 cursor-pointer'
+                      ? 'border-cyan-300 bg-white/88 text-cyan-800 cursor-default'
+                      : 'border-cyan-700 bg-cyan-600 text-white hover:bg-cyan-500 cursor-pointer'
                   }`}
                 >
                   {pirate.bubbleCoated
@@ -1657,8 +2123,8 @@ export const IslandSceneView: React.FC<IslandSceneViewProps> = ({
             {/* Moored Pixel Ships cleanly in ocean water outside the Eastern Harbor Pier */}
             <div className="pointer-events-none absolute -right-5 sm:-right-7 top-[46%]">
               <PixelShip
-                sailColor={pirate.flagColor || '#f8fafc'}
-                bubbleCoated={Boolean(pirate.bubbleCoated)}
+                sailColor={isPlayerDockedHere ? pirate.flagColor || '#f8fafc' : '#94a3b8'}
+                bubbleCoated={isPlayerDockedHere && Boolean(pirate.bubbleCoated)}
               />
             </div>
             <div className="pointer-events-none absolute -right-4 sm:-right-6 top-[72%]">
@@ -1719,23 +2185,23 @@ export const IslandSceneView: React.FC<IslandSceneViewProps> = ({
                   className="group absolute -translate-x-1/2 -translate-y-1/2 flex flex-col items-center cursor-pointer z-10"
                 >
                   <span
-                    className={`flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-bold tracking-tight transition-colors border ${
+                    className={`flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[9px] font-bold tracking-tight transition-colors border shadow-sm ${
                       isCurrent
-                        ? 'bg-[#f5b82e] border-[#fef08a] text-slate-950'
-                        : 'bg-[#0b1526]/95 border-slate-500 text-slate-100 group-hover:border-amber-300'
+                        ? 'bg-[#f5b82e] border-amber-600 text-slate-950'
+                        : 'bg-white/90 border-sky-300 text-slate-900 group-hover:border-amber-500 group-hover:bg-white'
                     }`}
                   >
                     {zone.id === 'dojo' && (
-                      <Swords className={`h-2.5 w-2.5 ${isCurrent ? 'text-slate-950' : 'text-sky-300'}`} />
+                      <Swords className={`h-2.5 w-2.5 ${isCurrent ? 'text-slate-950' : 'text-sky-700'}`} />
                     )}
                     {zone.id === 'ruinas' && (
-                      <Coins className={`h-2.5 w-2.5 ${isCurrent ? 'text-slate-950' : 'text-amber-300'}`} />
+                      <Coins className={`h-2.5 w-2.5 ${isCurrent ? 'text-slate-950' : 'text-amber-700'}`} />
                     )}
                     {zone.id === 'taberna' && (
-                      <Flame className={`h-2.5 w-2.5 ${isCurrent ? 'text-slate-950' : 'text-orange-300'}`} />
+                      <Flame className={`h-2.5 w-2.5 ${isCurrent ? 'text-slate-950' : 'text-orange-700'}`} />
                     )}
                     {zone.id === 'puerto' && (
-                      <Anchor className={`h-2.5 w-2.5 ${isCurrent ? 'text-slate-950' : 'text-teal-300'}`} />
+                      <Anchor className={`h-2.5 w-2.5 ${isCurrent ? 'text-slate-950' : 'text-teal-700'}`} />
                     )}
                     <span>{zone.label}</span>
                   </span>
@@ -1745,7 +2211,13 @@ export const IslandSceneView: React.FC<IslandSceneViewProps> = ({
 
             {/* Clickable NPC Quest Givers actively patrolling inside their assigned zones */}
             {npcQuests.map((quest, idx) => {
-              const slot = NPC_STAGE_SLOTS[idx % NPC_STAGE_SLOTS.length];
+              const silhouette = getInteriorSilhouetteKind(island);
+              const slot =
+                silhouette === 'crescent_harbor' && idx === 3
+                  ? { x: 29, y: 69 }
+                  : silhouette === 'sea_bridge' && idx === 3
+                  ? { x: 24, y: 66 }
+                  : NPC_STAGE_SLOTS[idx % NPC_STAGE_SLOTS.length];
               const patrolList = ZONE_PATROL_OFFSETS[quest.zone] ?? ZONE_PATROL_OFFSETS.puerto;
               const stepIdx = (ambientPhase + idx) % patrolList.length;
               const prevStepIdx = (stepIdx + patrolList.length - 1) % patrolList.length;
@@ -1762,7 +2234,9 @@ export const IslandSceneView: React.FC<IslandSceneViewProps> = ({
                 <button
                   key={quest.id}
                   type="button"
-                  onClick={() => onSelectNpcQuest?.(quest.id)}
+                  onClick={() => {
+                    if (isPlayerDockedHere) onSelectNpcQuest?.(quest.id);
+                  }}
                   title={`${quest.npcName}: ${quest.title}`}
                   style={{
                     left: `${nx}%`,
@@ -1772,10 +2246,10 @@ export const IslandSceneView: React.FC<IslandSceneViewProps> = ({
                   className="group absolute -translate-x-1/2 -translate-y-1/2 flex flex-col items-center cursor-pointer z-[11]"
                 >
                   <span
-                    className={`mb-0.5 px-1 py-0 text-[8px] font-black leading-tight border whitespace-nowrap ${
+                    className={`mb-0.5 rounded px-1 py-0 text-[8px] font-black leading-tight border whitespace-nowrap shadow-sm ${
                       done
-                        ? 'bg-emerald-950/95 border-emerald-400 text-emerald-200'
-                        : 'bg-amber-400 border-amber-100 text-slate-950 group-hover:bg-amber-300'
+                        ? 'bg-emerald-50/94 border-emerald-500 text-emerald-800'
+                        : 'bg-amber-300/96 border-amber-600 text-slate-950 group-hover:bg-amber-200'
                     }`}
                   >
                     {done ? '✓' : '!'} {getShortStageName(quest.npcName)}
@@ -1825,7 +2299,9 @@ export const IslandSceneView: React.FC<IslandSceneViewProps> = ({
                 <button
                   key={mb.id}
                   type="button"
-                  onClick={() => onChallengeMiniBoss?.(mb.id)}
+                  onClick={() => {
+                    if (isPlayerDockedHere) onChallengeMiniBoss?.(mb.id);
+                  }}
                   title={`Subjefe: ${mb.name} (${mb.title})`}
                   style={{
                     left: `${mx}%`,
@@ -1835,10 +2311,10 @@ export const IslandSceneView: React.FC<IslandSceneViewProps> = ({
                   className="group absolute -translate-x-1/2 -translate-y-1/2 flex flex-col items-center cursor-pointer z-[12]"
                 >
                   <span
-                    className={`mb-0.5 px-1 py-0 text-[8px] font-black leading-tight border whitespace-nowrap ${
+                    className={`mb-0.5 rounded px-1 py-0 text-[8px] font-black leading-tight border whitespace-nowrap shadow-sm ${
                       defeated
-                        ? 'bg-slate-900/95 border-emerald-400/70 text-emerald-300'
-                        : 'bg-orange-950/95 border-orange-400 text-orange-200 group-hover:bg-orange-800'
+                        ? 'bg-white/92 border-emerald-500 text-emerald-800'
+                        : 'bg-orange-50/94 border-orange-500 text-orange-900 group-hover:bg-orange-100'
                     }`}
                   >
                     {defeated ? '✓ ' : 'SUB: '}
@@ -1878,7 +2354,7 @@ export const IslandSceneView: React.FC<IslandSceneViewProps> = ({
               className="absolute -translate-x-1/2 -translate-y-1/2 flex flex-col items-center cursor-pointer z-[13] group"
               title={`Desafiar a ${boss.name} (${boss.title})`}
             >
-              <span className="mb-0.5 bg-rose-950 border border-rose-400 px-1 py-0 text-[8px] font-black leading-tight text-rose-100 whitespace-nowrap group-hover:bg-rose-800">
+              <span className="mb-0.5 rounded bg-rose-50/94 border border-rose-500 px-1 py-0 text-[8px] font-black leading-tight text-rose-900 whitespace-nowrap shadow-sm group-hover:bg-rose-100">
                 JEFE: {getShortStageName(boss.name)}
               </span>
               <PirateAvatarSvg
@@ -1937,7 +2413,7 @@ export const IslandSceneView: React.FC<IslandSceneViewProps> = ({
                   }}
                   className="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 flex flex-col items-center z-[14]"
                 >
-                  <span className="mb-0.5 bg-[#081221]/90 border border-sky-400/50 px-1 py-0 text-[8px] font-bold leading-tight text-sky-200 whitespace-nowrap">
+                  <span className="mb-0.5 rounded bg-white/90 border border-sky-400 px-1 py-0 text-[8px] font-bold leading-tight text-sky-900 shadow-sm whitespace-nowrap">
                     @{peer.name}
                   </span>
                   <div style={{ animation: 'pirateStepHop 0.44s steps(2, end) infinite' }}>
@@ -1968,75 +2444,76 @@ export const IslandSceneView: React.FC<IslandSceneViewProps> = ({
               );
             })}
 
-            {/* Active Player Character (race & Elbaph scaled) */}
-            {(() => {
-              const playerScale = getCharacterSpriteScale(pirate.race, island.id);
-              const playerSpriteSize = Math.round(UNIFORM_ISLAND_SPRITE_SIZE * playerScale);
-              return (
-                <div
-                  style={{
-                    left: `${pos.x}%`,
-                    top: `${pos.y}%`,
-                    transition: 'left 1.15s steps(16, end), top 1.15s steps(16, end)',
-                  }}
-                  className="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 flex flex-col items-center z-20"
-                  data-testid="active-island-character"
-                  data-walking={isWalking ? 'true' : 'false'}
-                  data-race={pirate.race ?? 'humano'}
-                  data-sprite-size={playerSpriteSize}
-                >
-                  <div className="mb-0.5 border border-amber-400/80 bg-[#0b1526]/95 px-1 py-0 text-[8px] font-bold leading-tight text-amber-200 whitespace-nowrap">
-                    @{pirate.name} · {rank.title}
-                  </div>
-
-                  <div className="relative mb-0.5 border border-[#0f172a] bg-white px-1 py-0 text-[8px] font-black leading-tight text-slate-950">
-                    {bubbleText}
-                  </div>
-
+            {/* Active Player Character (shown when docked on this island) */}
+            {isPlayerDockedHere &&
+              (() => {
+                const playerScale = getCharacterSpriteScale(pirate.race, island.id);
+                const playerSpriteSize = Math.round(UNIFORM_ISLAND_SPRITE_SIZE * playerScale);
+                return (
                   <div
-                    className="relative flex flex-col items-center"
                     style={{
-                      animation: isWalking ? 'pirateStepHop 0.36s steps(2, end) infinite' : 'none',
+                      left: `${pos.x}%`,
+                      top: `${pos.y}%`,
+                      transition: 'left 1.15s steps(16, end), top 1.15s steps(16, end)',
                     }}
+                    className="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 flex flex-col items-center z-20"
+                    data-testid="active-island-character"
+                    data-walking={isWalking ? 'true' : 'false'}
+                    data-race={pirate.race ?? 'humano'}
+                    data-sprite-size={playerSpriteSize}
                   >
-                    <PirateAvatarSvg
-                      name={pirate.name}
-                      flagColor={pirate.flagColor}
-                      race={pirate.race}
-                      hatStyle={pirate.hatStyle}
-                      hatColor={pirate.hatColor}
-                      skinTone={pirate.skinTone}
-                      hairStyle={pirate.hairStyle}
-                      hairColor={pirate.hairColor}
-                      bodyBuild={pirate.bodyBuild}
-                      outfitStyle={pirate.outfitStyle}
-                      outfitColor={pirate.outfitColor}
-                      accessory={pirate.accessory}
-                      accessoryColor={pirate.accessoryColor}
-                      capeStyle={pirate.capeStyle}
-                      capeColor={pirate.capeColor}
-                      weaponStyle={pirate.weaponStyle}
-                      role={pirate.role}
-                      hasEquippedWeapon={Boolean(pirate.equipped?.arma)}
-                      facing={facing}
-                      size={playerSpriteSize}
-                    />
-                    {/* Crisp Pixel Selection Tile Under Character */}
-                    <svg
-                      width={Math.round(20 * playerScale)}
-                      height={Math.max(3, Math.round(4 * playerScale))}
-                      viewBox="0 0 10 2"
-                      shapeRendering="crispEdges"
-                      className="-mt-0.5"
-                      aria-hidden="true"
+                    <div className="mb-0.5 rounded border border-amber-500 bg-white/92 px-1 py-0 text-[8px] font-bold leading-tight text-slate-900 shadow-sm whitespace-nowrap">
+                      @{pirate.name} · {rank.title}
+                    </div>
+
+                    <div className="relative mb-0.5 border border-[#0f172a] bg-white px-1 py-0 text-[8px] font-black leading-tight text-slate-950">
+                      {bubbleText}
+                    </div>
+
+                    <div
+                      className="relative flex flex-col items-center"
+                      style={{
+                        animation: isWalking ? 'pirateStepHop 0.36s steps(2, end) infinite' : 'none',
+                      }}
                     >
-                      <rect x={1} y={0} width={8} height={1} fill="#facc15" opacity="0.85" />
-                      <rect x={0} y={1} width={10} height={1} fill="#facc15" opacity="0.95" />
-                    </svg>
+                      <PirateAvatarSvg
+                        name={pirate.name}
+                        flagColor={pirate.flagColor}
+                        race={pirate.race}
+                        hatStyle={pirate.hatStyle}
+                        hatColor={pirate.hatColor}
+                        skinTone={pirate.skinTone}
+                        hairStyle={pirate.hairStyle}
+                        hairColor={pirate.hairColor}
+                        bodyBuild={pirate.bodyBuild}
+                        outfitStyle={pirate.outfitStyle}
+                        outfitColor={pirate.outfitColor}
+                        accessory={pirate.accessory}
+                        accessoryColor={pirate.accessoryColor}
+                        capeStyle={pirate.capeStyle}
+                        capeColor={pirate.capeColor}
+                        weaponStyle={pirate.weaponStyle}
+                        role={pirate.role}
+                        hasEquippedWeapon={Boolean(pirate.equipped?.arma)}
+                        facing={facing}
+                        size={playerSpriteSize}
+                      />
+                      {/* Crisp Pixel Selection Tile Under Character */}
+                      <svg
+                        width={Math.round(20 * playerScale)}
+                        height={Math.max(3, Math.round(4 * playerScale))}
+                        viewBox="0 0 10 2"
+                        shapeRendering="crispEdges"
+                        className="-mt-0.5"
+                        aria-hidden="true"
+                      >
+                        <rect x={1} y={0} width={8} height={1} fill="#facc15" opacity="0.85" />
+                        <rect x={0} y={1} width={10} height={1} fill="#facc15" opacity="0.95" />
+                      </svg>
+                    </div>
                   </div>
-                </div>
-              );
-            })()}
+                );
+              })()}
 
             {/* Crisp 16-bit Pixel Weather Foreground Overlay */}
             {weather.type !== 'despejado' && (
@@ -2120,6 +2597,60 @@ export const IslandSceneView: React.FC<IslandSceneViewProps> = ({
             )}
           </div>
         </div>
+      </div>
+
+      {/* Unified Continuum Zoom Toolbar (Bottom-Right) */}
+      <div
+        data-testid="island-zoom-toolbar"
+        className="pointer-events-auto fixed bottom-20 md:bottom-4 right-3 z-30 flex items-center gap-1.5 rounded-xl border border-white/80 bg-white/84 backdrop-blur-sm p-1.5 shadow-[0_14px_38px_rgba(15,23,42,0.16)]"
+      >
+        <button
+          type="button"
+          data-testid="island-zoom-in-btn"
+          onClick={() => applyInteriorZoom(1.22)}
+          aria-label="Acercar isla"
+          className="flex h-8 w-8 items-center justify-center rounded-lg border border-sky-200 bg-sky-50/90 text-slate-800 hover:border-amber-500 hover:bg-white cursor-pointer"
+        >
+          <ZoomIn className="h-4 w-4" />
+        </button>
+        <button
+          type="button"
+          data-testid="island-zoom-out-btn"
+          onClick={() => applyInteriorZoom(0.8)}
+          aria-label="Alejar isla"
+          title="Alejar hacia el Mapa 2D"
+          className="flex h-8 w-8 items-center justify-center rounded-lg border border-sky-200 bg-sky-50/90 text-slate-800 hover:border-amber-500 hover:bg-white cursor-pointer"
+        >
+          <ZoomOut className="h-4 w-4" />
+        </button>
+        <span
+          data-testid="island-zoom-readout"
+          className="px-1.5 font-mono-num text-[11px] font-bold text-amber-800 whitespace-nowrap"
+        >
+          {interiorZoom.toFixed(1)}x · Isla
+        </span>
+        {!isPlayerDockedHere && !pirate.sailingToIslandId && onSailToInspectedIsland && (
+          <button
+            type="button"
+            data-testid="island-inspect-sail-btn"
+            onClick={() => onSailToInspectedIsland(island.id)}
+            className="flex items-center gap-1 rounded-lg bg-sky-600 px-2.5 py-1.5 text-[11px] font-black text-white hover:bg-sky-500 cursor-pointer"
+          >
+            <Compass className="h-3.5 w-3.5" />
+            <span>Zarpar aquí</span>
+          </button>
+        )}
+        {onFocusMyShip && (
+          <button
+            type="button"
+            data-testid="island-center-ship-btn"
+            onClick={onFocusMyShip}
+            className="flex items-center gap-1 rounded-lg border border-sky-200 bg-sky-50/90 px-2.5 py-1.5 text-[11px] font-bold text-amber-800 hover:border-amber-500 hover:bg-white cursor-pointer"
+          >
+            <LocateFixed className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Mi barco</span>
+          </button>
+        )}
       </div>
     </div>
   );

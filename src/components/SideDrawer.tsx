@@ -83,17 +83,17 @@ export const SideDrawer: React.FC<SideDrawerProps> = ({
   const renderEventIcon = (type: WorldEvent['type']) => {
     switch (type) {
       case 'duel':
-        return <Swords className="h-3.5 w-3.5 text-rose-400 shrink-0" />;
+        return <Swords className="h-3.5 w-3.5 text-rose-600 shrink-0" />;
       case 'treasure':
-        return <Coins className="h-3.5 w-3.5 text-amber-400 shrink-0" />;
+        return <Coins className="h-3.5 w-3.5 text-amber-600 shrink-0" />;
       case 'devil_fruit':
-        return <Flame className="h-3.5 w-3.5 text-purple-400 shrink-0" />;
+        return <Flame className="h-3.5 w-3.5 text-purple-600 shrink-0" />;
       case 'voyage':
-        return <Compass className="h-3.5 w-3.5 text-sky-400 shrink-0" />;
+        return <Compass className="h-3.5 w-3.5 text-sky-600 shrink-0" />;
       case 'launch':
-        return <Anchor className="h-3.5 w-3.5 text-amber-300 shrink-0" />;
+        return <Anchor className="h-3.5 w-3.5 text-amber-700 shrink-0" />;
       default:
-        return <Anchor className="h-3.5 w-3.5 text-emerald-400 shrink-0" />;
+        return <Anchor className="h-3.5 w-3.5 text-emerald-600 shrink-0" />;
     }
   };
 
@@ -108,10 +108,10 @@ export const SideDrawer: React.FC<SideDrawerProps> = ({
   return (
     <aside
       aria-label="Panel del mundo pirata"
-      className="pointer-events-auto flex h-full w-full sm:w-[390px] flex-col rounded-xl border border-amber-500/25 bg-[#081221]/95 text-slate-100 shadow-2xl overflow-hidden"
+      className="pointer-events-auto flex h-full w-full sm:w-[390px] flex-col rounded-2xl border border-white/80 bg-white/80 backdrop-blur-md text-slate-900 shadow-[0_20px_50px_rgba(15,23,42,0.16)] overflow-hidden"
     >
       {/* Top Tabs */}
-      <div className="flex items-center justify-between border-b border-slate-800 px-3 py-2.5 bg-[#0b172a]">
+      <div className="flex items-center justify-between border-b border-sky-200/80 px-3 py-2.5 bg-sky-50/85">
         <div className="flex items-center gap-1" role="tablist" aria-label="Secciones del diario">
           {(
             [
@@ -132,8 +132,8 @@ export const SideDrawer: React.FC<SideDrawerProps> = ({
                 onClick={() => onSelectTab(t.id)}
                 className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
                   isActive
-                    ? 'bg-amber-400 text-slate-950'
-                    : 'text-slate-300 hover:bg-slate-800 hover:text-white'
+                    ? 'bg-amber-400 text-slate-950 font-bold'
+                    : 'text-slate-700 hover:bg-white/80 hover:text-slate-950'
                 }`}
               >
                 <Icon className="h-3.5 w-3.5" />
@@ -147,7 +147,7 @@ export const SideDrawer: React.FC<SideDrawerProps> = ({
           type="button"
           onClick={onClose}
           aria-label="Cerrar panel"
-          className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-white cursor-pointer"
+          className="rounded-lg p-1.5 text-slate-500 hover:bg-white/80 hover:text-slate-900 cursor-pointer"
         >
           <X className="h-4 w-4" />
         </button>
@@ -156,15 +156,15 @@ export const SideDrawer: React.FC<SideDrawerProps> = ({
       {/* Body */}
       {activeTab === 'noticias' && (
         <div className="flex flex-1 flex-col overflow-hidden">
-          <div className="flex items-center justify-between border-b border-slate-800/80 px-3 py-2">
+          <div className="flex items-center justify-between border-b border-sky-200/70 px-3 py-2 bg-white/55">
             <div className="flex items-center gap-1.5">
               <button
                 type="button"
                 onClick={() => setNewsFilter('importante')}
                 className={`rounded-md px-2.5 py-1 text-xs font-semibold cursor-pointer transition-colors ${
                   newsFilter === 'importante'
-                    ? 'bg-slate-100 text-slate-950'
-                    : 'text-slate-300 hover:bg-slate-800'
+                    ? 'bg-sky-600 text-white'
+                    : 'text-slate-700 hover:bg-sky-100/75'
                 }`}
               >
                 Lo importante
@@ -174,8 +174,8 @@ export const SideDrawer: React.FC<SideDrawerProps> = ({
                 onClick={() => setNewsFilter('mio')}
                 className={`rounded-md px-2.5 py-1 text-xs font-semibold cursor-pointer transition-colors ${
                   newsFilter === 'mio'
-                    ? 'bg-slate-100 text-slate-950'
-                    : 'text-slate-300 hover:bg-slate-800'
+                    ? 'bg-sky-600 text-white'
+                    : 'text-slate-700 hover:bg-sky-100/75'
                 }`}
               >
                 Lo mío ({myPirates.length})
@@ -186,8 +186,8 @@ export const SideDrawer: React.FC<SideDrawerProps> = ({
               onClick={() => setNewsFilter('portada')}
               className={`rounded-md px-2.5 py-1 text-xs font-semibold cursor-pointer transition-colors ${
                 newsFilter === 'portada'
-                  ? 'bg-amber-400 text-slate-950'
-                  : 'text-amber-300 hover:bg-slate-800'
+                  ? 'bg-amber-400 text-slate-950 font-bold'
+                  : 'text-amber-700 hover:bg-amber-100/70'
               }`}
             >
               Portada
@@ -234,8 +234,8 @@ export const SideDrawer: React.FC<SideDrawerProps> = ({
                 )}
               </div>
             ) : filteredEvents.length === 0 ? (
-              <div className="rounded-lg border border-slate-800 bg-slate-900/50 p-5 text-center">
-                <p className="text-xs text-slate-400">
+              <div className="rounded-xl border border-sky-200/80 bg-sky-50/75 p-5 text-center">
+                <p className="text-xs text-slate-600">
                   Aún no hay noticias de tus piratas. Crea un personaje para verlo zarpar y pelear en el mar.
                 </p>
                 <button
@@ -252,10 +252,10 @@ export const SideDrawer: React.FC<SideDrawerProps> = ({
                   key={ev.id}
                   type="button"
                   onClick={() => onFocusIsland(ev.islandId)}
-                  className={`w-full text-left rounded-lg border p-2.5 transition-colors cursor-pointer ${
+                  className={`w-full text-left rounded-xl border p-2.5 transition-colors cursor-pointer ${
                     ev.isPlayerRelated
-                      ? 'border-amber-400/50 bg-amber-950/25 hover:bg-amber-950/40'
-                      : 'border-slate-800/90 bg-slate-900/55 hover:bg-slate-800/75'
+                      ? 'border-amber-400/70 bg-amber-50/85 hover:bg-amber-100/70'
+                      : 'border-sky-200/80 bg-sky-50/75 hover:bg-white/90'
                   }`}
                 >
                   <div className="flex items-center justify-between gap-2 text-[11px] font-medium">
@@ -267,18 +267,18 @@ export const SideDrawer: React.FC<SideDrawerProps> = ({
                       >
                         {ev.sea}
                       </span>
-                      <span aria-hidden="true" className="text-slate-600">·</span>
-                      <span className="font-mono-num text-slate-400">
+                      <span aria-hidden="true" className="text-slate-400">·</span>
+                      <span className="font-mono-num text-slate-600">
                         D{ev.day} {ev.timeLabel}
                       </span>
                     </div>
                     {ev.bountyDelta > 0 && (
-                      <span className="font-mono-num text-[11px] font-bold text-amber-300 shrink-0">
+                      <span className="font-mono-num text-[11px] font-bold text-amber-700 shrink-0">
                         +{formatShortBounty(ev.bountyDelta)}
                       </span>
                     )}
                   </div>
-                  <p className="mt-1 text-xs leading-relaxed text-slate-200">
+                  <p className="mt-1 text-xs leading-relaxed text-slate-800">
                     {ev.message}
                   </p>
                 </button>
@@ -290,14 +290,14 @@ export const SideDrawer: React.FC<SideDrawerProps> = ({
 
       {activeTab === 'tablones' && (
         <div className="flex flex-1 flex-col overflow-hidden">
-          <div className="flex items-center gap-1.5 border-b border-slate-800/80 px-3 py-2">
+          <div className="flex items-center gap-1.5 border-b border-sky-200/70 px-3 py-2 bg-white/55">
             <button
               type="button"
               onClick={() => setBoardView('piratas')}
               className={`rounded-md px-2.5 py-1 text-xs font-semibold cursor-pointer ${
                 boardView === 'piratas'
-                  ? 'bg-amber-400 text-slate-950'
-                  : 'text-slate-300 hover:bg-slate-800'
+                  ? 'bg-amber-400 text-slate-950 font-bold'
+                  : 'text-slate-700 hover:bg-sky-100/75'
               }`}
             >
               Carteles Se Busca
@@ -307,8 +307,8 @@ export const SideDrawer: React.FC<SideDrawerProps> = ({
               onClick={() => setBoardView('tripulaciones')}
               className={`rounded-md px-2.5 py-1 text-xs font-semibold cursor-pointer ${
                 boardView === 'tripulaciones'
-                  ? 'bg-amber-400 text-slate-950'
-                  : 'text-slate-300 hover:bg-slate-800'
+                  ? 'bg-amber-400 text-slate-950 font-bold'
+                  : 'text-slate-700 hover:bg-sky-100/75'
               }`}
             >
               Tripulaciones
@@ -329,20 +329,20 @@ export const SideDrawer: React.FC<SideDrawerProps> = ({
               : sortedCrews.map((c, idx) => (
                   <div
                     key={c.name}
-                    className="flex items-center justify-between rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2.5"
+                    className="flex items-center justify-between rounded-xl border border-sky-200/80 bg-sky-50/75 px-3 py-2.5"
                   >
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
-                        <span className="font-mono-num text-xs font-bold text-amber-400">
+                        <span className="font-mono-num text-xs font-bold text-amber-700">
                           #{idx + 1}
                         </span>
-                        <span className="truncate text-sm font-bold text-white">{c.name}</span>
+                        <span className="truncate text-sm font-bold text-slate-900">{c.name}</span>
                       </div>
-                      <div className="mt-0.5 text-[11px] text-slate-400">
+                      <div className="mt-0.5 text-[11px] text-slate-600">
                         {c.members} {c.members === 1 ? 'integrante' : 'integrantes'}
                       </div>
                     </div>
-                    <div className="font-mono-num text-xs font-bold text-amber-300 shrink-0">
+                    <div className="font-mono-num text-xs font-bold text-amber-700 shrink-0">
                       {formatShortBounty(c.totalBounty)}
                     </div>
                   </div>
@@ -353,28 +353,28 @@ export const SideDrawer: React.FC<SideDrawerProps> = ({
 
       {activeTab === 'chat' && (
         <div className="flex flex-1 flex-col overflow-hidden">
-          <div className="border-b border-slate-800/80 px-3 py-2 text-[11px] text-slate-400">
+          <div className="border-b border-sky-200/70 px-3 py-2 text-[11px] text-slate-600 bg-white/55">
             Red Den Den Mushi · {isSignedIn ? 'Conectado a Firebase' : 'Modo local (inicia sesión para sincronizar)'}
           </div>
           <div className="flex-1 overflow-y-auto nautical-scroll p-3 space-y-2">
             {chatMessages.map((m) => (
               <div
                 key={m.id}
-                className={`rounded-lg border p-2.5 ${
+                className={`rounded-xl border p-2.5 ${
                   m.isMine
-                    ? 'border-amber-400/40 bg-amber-950/25'
-                    : 'border-slate-800 bg-slate-900/60'
+                    ? 'border-amber-400/70 bg-amber-50/85'
+                    : 'border-sky-200/80 bg-sky-50/75'
                 }`}
               >
                 <div className="flex items-center justify-between text-[11px]">
-                  <span className="font-bold text-amber-300">{m.senderName}</span>
-                  <span className="text-slate-400">{m.sea}</span>
+                  <span className="font-bold text-amber-800">{m.senderName}</span>
+                  <span className="text-slate-500">{m.sea}</span>
                 </div>
-                <p className="mt-1 text-xs text-slate-200 break-words">{m.text}</p>
+                <p className="mt-1 text-xs text-slate-800 break-words">{m.text}</p>
               </div>
             ))}
           </div>
-          <form onSubmit={handleChatSubmit} className="border-t border-slate-800 p-2.5 flex gap-2">
+          <form onSubmit={handleChatSubmit} className="border-t border-sky-200/80 bg-white/70 p-2.5 flex gap-2">
             <label htmlFor="den-den-chat" className="sr-only">
               Mensaje de taberna
             </label>
@@ -385,7 +385,7 @@ export const SideDrawer: React.FC<SideDrawerProps> = ({
               value={chatInput}
               onChange={(e) => setChatInput(e.target.value)}
               placeholder="Envía un mensaje por Den Den Mushi..."
-              className="flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs text-white focus:border-amber-400 focus:outline-none"
+              className="flex-1 rounded-lg border border-sky-200 bg-white/90 px-3 py-1.5 text-xs text-slate-900 placeholder:text-slate-400 focus:border-teal-600 focus:outline-none"
             />
             <button
               type="submit"
@@ -400,9 +400,9 @@ export const SideDrawer: React.FC<SideDrawerProps> = ({
       {activeTab === 'cofre' && (
         <div className="flex-1 overflow-y-auto nautical-scroll p-3 space-y-3">
           {myPirates.length === 0 ? (
-            <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-5 text-center">
-              <p className="text-sm font-semibold text-white">Tu cofre aún está vacío</p>
-              <p className="mt-1 text-xs text-slate-400">
+            <div className="rounded-xl border border-sky-200/80 bg-sky-50/75 p-5 text-center">
+              <p className="text-sm font-semibold text-slate-900">Tu cofre aún está vacío</p>
+              <p className="mt-1 text-xs text-slate-600">
                 Crea tu primer pirata y suéltalo a navegar por el Grand Line para acumular Berries y Frutas del Diablo.
               </p>
               <button
@@ -422,64 +422,64 @@ export const SideDrawer: React.FC<SideDrawerProps> = ({
               return (
                 <div
                   key={p.id}
-                  className="rounded-lg border border-amber-500/40 bg-slate-900/80 p-3 space-y-2.5"
+                  className="rounded-xl border border-sky-200/80 bg-sky-50/75 p-3 space-y-2.5"
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
-                      <div className="font-display truncate text-base font-black text-amber-300">
+                      <div className="font-display truncate text-base font-black text-slate-900">
                         {p.name}
                       </div>
-                      <div className="text-xs text-slate-300">
+                      <div className="text-xs text-slate-600">
                         «{p.epithet}» · {p.crewName}
                       </div>
                     </div>
                     <button
                       type="button"
                       onClick={() => onFocusPirate(p)}
-                      className="rounded bg-slate-800 px-2.5 py-1 text-[11px] font-semibold text-amber-300 hover:bg-slate-700 cursor-pointer whitespace-nowrap"
+                      className="rounded-lg border border-sky-200 bg-white/85 px-2.5 py-1 text-[11px] font-semibold text-amber-700 hover:bg-white cursor-pointer whitespace-nowrap"
                     >
                       Seguir
                     </button>
                   </div>
 
                   <div className="grid grid-cols-3 gap-2 text-center">
-                    <div className="rounded bg-[#0b1526] p-1.5">
-                      <div className="text-[10px] text-slate-400">Recompensa</div>
-                      <div className="font-mono-num text-xs font-bold text-amber-300">
+                    <div className="rounded-lg border border-sky-200/70 bg-white/80 p-1.5">
+                      <div className="text-[10px] text-slate-500">Recompensa</div>
+                      <div className="font-mono-num text-xs font-bold text-amber-700">
                         {formatShortBounty(p.bounty)}
                       </div>
                     </div>
-                    <div className="rounded bg-[#0b1526] p-1.5">
-                      <div className="text-[10px] text-slate-400">Monedones</div>
-                      <div className="font-mono-num text-xs font-bold text-emerald-300">
+                    <div className="rounded-lg border border-sky-200/70 bg-white/80 p-1.5">
+                      <div className="text-[10px] text-slate-500">Monedones</div>
+                      <div className="font-mono-num text-xs font-bold text-emerald-700">
                         {p.berries}
                       </div>
                     </div>
-                    <div className="rounded bg-[#0b1526] p-1.5">
-                      <div className="text-[10px] text-slate-400">Duelos</div>
-                      <div className="font-mono-num text-xs font-bold text-white">
+                    <div className="rounded-lg border border-sky-200/70 bg-white/80 p-1.5">
+                      <div className="text-[10px] text-slate-500">Duelos</div>
+                      <div className="font-mono-num text-xs font-bold text-slate-900">
                         {p.wins}V / {p.losses}D
                       </div>
                     </div>
                   </div>
 
-                  <div className="text-xs text-slate-300">
+                  <div className="text-xs text-slate-700">
                     {destIsl
                       ? `Navegando rumbo a ${destIsl.name}`
                       : `Atracado en ${currIsl?.name ?? 'alta mar'}`}
                     {p.devilFruit ? ` · Poder: ${p.devilFruit}` : ''}
                   </div>
 
-                  <div className="text-[11px] text-slate-400">
-                    <span className="text-amber-300 font-semibold">Físico:</span>{' '}
+                  <div className="text-[11px] text-slate-600">
+                    <span className="text-amber-700 font-semibold">Físico:</span>{' '}
                     {p.physicalTraits.map(getTraitLabel).join(' · ')}
-                    <span className="mx-1.5 text-slate-600">/</span>
-                    <span className="text-sky-300 font-semibold">Destreza:</span>{' '}
+                    <span className="mx-1.5 text-slate-400">/</span>
+                    <span className="text-sky-700 font-semibold">Destreza:</span>{' '}
                     {p.mentalTraits.map(getTraitLabel).join(' · ')}
                   </div>
 
                   <div>
-                    <div className="text-[11px] font-semibold text-slate-400 mb-1">
+                    <div className="text-[11px] font-semibold text-slate-600 mb-1">
                       Directiva de Rumbo
                     </div>
                     <div className="flex flex-wrap gap-1">
@@ -490,8 +490,8 @@ export const SideDrawer: React.FC<SideDrawerProps> = ({
                           onClick={() => onChangeDirective(p.id, dir.id)}
                           className={`rounded px-2 py-1 text-[11px] font-semibold cursor-pointer transition-colors ${
                             p.directive === dir.id
-                              ? 'bg-amber-400 text-slate-950'
-                              : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                              ? 'bg-amber-400 text-slate-950 font-bold'
+                              : 'bg-white/85 border border-sky-200 text-slate-700 hover:bg-white'
                           }`}
                         >
                           {dir.label}

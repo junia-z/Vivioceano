@@ -1,7 +1,13 @@
 import React, { useEffect, useRef } from 'react';
+import { LocateFixed, ZoomIn, ZoomOut } from 'lucide-react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import {
+  GLOBE_DIST_MAX,
+  GLOBE_DIST_MIN,
+  evaluateGlobeZoomTransition,
+} from '../game/zoomContinuum';
 import {
   createSeededRng,
   getBotHeadingXYZ,
@@ -71,6 +77,7 @@ interface GlobeCanvasProps {
   onSelectPirate: (pirateId: string) => void;
   onSelectRoamingNpc?: (npcId: string) => void;
   onZoomTransitionToMap?: (lat: number, lon: number) => void;
+  onFocusMyShip?: () => void;
 }
 
 const GLOBE_RADIUS = 5.0;
@@ -563,6 +570,7 @@ export const GlobeCanvas: React.FC<GlobeCanvasProps> = ({
   onSelectPirate,
   onSelectRoamingNpc,
   onZoomTransitionToMap,
+  onFocusMyShip,
 }) => {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const labelLayerRef = useRef<HTMLDivElement | null>(null);
@@ -584,6 +592,8 @@ export const GlobeCanvas: React.FC<GlobeCanvasProps> = ({
   const minuteRef = useRef<number>(minuteOfDay);
   const pausedRef = useRef<boolean>(paused);
   const resumeLoopRef = useRef<(() => void) | null>(null);
+  const adjustZoomRef = useRef<((mult: number) => void) | null>(null);
+  const resetZoomLatchRef = useRef<(() => void) | null>(null);
   const onSelectIslandRef = useRef(onSelectIsland);
   const onSelectPirateRef = useRef(onSelectPirate);
   const onSelectRoamingNpcRef = useRef(onSelectRoamingNpc);
@@ -615,12 +625,14 @@ export const GlobeCanvas: React.FC<GlobeCanvasProps> = ({
 
   useEffect(() => {
     if (!paused) {
+      resetZoomLatchRef.current?.();
       resumeLoopRef.current?.();
     }
   }, [paused]);
 
   useEffect(() => {
     if (!cameraTarget) return;
+    resetZoomLatchRef.current?.();
     const [x, y, z] = latLonToXYZ(
       cameraTarget.lat,
       cameraTarget.lon,
@@ -921,7 +933,7 @@ export const GlobeCanvas: React.FC<GlobeCanvasProps> = ({
       zoomWeatherEl = document.createElement('div');
       zoomWeatherEl.dataset.testid = 'globe-zoom-weather';
       zoomWeatherEl.className =
-        'pointer-events-none absolute -translate-x-1/2 px-2 py-0.5 text-[10px] font-black border bg-[#081221]/92 whitespace-nowrap';
+        'pointer-events-none absolute -translate-x-1/2 rounded-md px-2 py-0.5 text-[10px] font-black border bg-white/88 backdrop-blur-sm shadow-sm whitespace-nowrap';
       zoomWeatherEl.style.display = 'none';
       labelLayerRef.current.appendChild(zoomWeatherEl);
     }
@@ -1211,8 +1223,8 @@ export const GlobeCanvas: React.FC<GlobeCanvasProps> = ({
     controls.dampingFactor = 0.06;
     controls.rotateSpeed = 0.65;
     controls.zoomSpeed = 0.9;
-    controls.minDistance = 5.75;
-    controls.maxDistance = 18.5;
+    controls.minDistance = GLOBE_DIST_MIN;
+    controls.maxDistance = GLOBE_DIST_MAX;
 
     controls.addEventListener('start', () => {
       flyTargetRef.current.active = false;
@@ -1261,6 +1273,35 @@ export const GlobeCanvas: React.FC<GlobeCanvasProps> = ({
 
     let lastUserZoomMs = 0;
     let zoomTransitionFired = false;
+    resetZoomLatchRef.current = () => {
+      zoomTransitionFired = false;
+    };
+    adjustZoomRef.current = (mult: number) => {
+      flyTargetRef.current.active = false;
+      const curDist = camera.position.length();
+      const nextDist = Math.max(GLOBE_DIST_MIN, Math.min(GLOBE_DIST_MAX, curDist * mult));
+      if (mult < 1) {
+        lastUserZoomMs = performance.now();
+        const transition = evaluateGlobeZoomTransition(nextDist, true);
+        if (
+          transition.nextStage === 'map' &&
+          !isTitleRef.current &&
+          !zoomTransitionFired &&
+          onZoomTransitionToMapRef.current
+        ) {
+          zoomTransitionFired = true;
+          const [mapLat, mapLon] = xyzToLatLon([
+            camera.position.x,
+            camera.position.y,
+            camera.position.z,
+          ]);
+          onZoomTransitionToMapRef.current(mapLat, mapLon);
+          return;
+        }
+      }
+      camera.position.setLength(nextDist);
+      controls.update();
+    };
     const onWheelZoom = (e: WheelEvent) => {
       if (e.deltaY < 0) {
         lastUserZoomMs = performance.now();
@@ -1349,6 +1390,11 @@ export const GlobeCanvas: React.FC<GlobeCanvasProps> = ({
     const _visibleBotsScratch: BotPirate[] = [];
     const _visibleRoamingScratch: ActiveRoamingShipNpc[] = [];
     const _activeRoamingIds = new Set<string>();
+    let lastDotBucket = -1;
+    let lastDotPirates: Pirate[] | null = null;
+    let lastDotBots: BotPirate[] | null = null;
+    let lastDotFilters: RedDotFilterId[] | null = null;
+    let lastDotSelPir: string | null = null;
 
     let frameId = 0;
     let lastTime = performance.now();
@@ -1415,13 +1461,16 @@ export const GlobeCanvas: React.FC<GlobeCanvasProps> = ({
       if (camDist > 7.4) {
         zoomTransitionFired = false;
       }
+      const zoomTransition = evaluateGlobeZoomTransition(
+        camDist,
+        now - lastUserZoomMs < 750
+      );
       if (
         !isTitleRef.current &&
         !flyTargetRef.current.active &&
         !zoomTransitionFired &&
         onZoomTransitionToMapRef.current &&
-        camDist < 6.75 &&
-        now - lastUserZoomMs < 750
+        zoomTransition.nextStage === 'map'
       ) {
         zoomTransitionFired = true;
         const [mapLat, mapLon] = xyzToLatLon([camera.position.x, camera.position.y, camera.position.z]);
@@ -1515,38 +1564,54 @@ export const GlobeCanvas: React.FC<GlobeCanvasProps> = ({
         }
       }
 
-      // Zoom Optimization 3: Filtered & importance-capped ships + roaming ship NPCs + bot dots
+      // Zoom Optimization 3: Filtered & importance-capped ships + roaming ship NPCs + bot dots (bucketed every 2s)
       const currentPirates = piratesRef.current;
       const currentIslands = islandsRef.current;
       const currentBots = botsRef.current;
       const activeFilters = redDotFiltersRef.current;
 
-      const activeRoaming = getActiveRoamingShipNpcs(currentIslands, Date.now());
-      const dotCandidates = buildMapDotCandidates(
-        currentPirates,
-        currentBots,
-        activeRoaming,
-        selectedPirateIdRef.current
-      );
-      const { visible: visibleDots } = filterAndRankMapDots(
-        dotCandidates,
-        activeFilters,
-        MAX_IMPORTANT_RED_DOTS
-      );
+      const dotBucket = Math.floor(Date.now() / 2000);
+      const needsDotRefresh =
+        dotBucket !== lastDotBucket ||
+        currentPirates !== lastDotPirates ||
+        currentBots !== lastDotBots ||
+        activeFilters !== lastDotFilters ||
+        selectedPirateIdRef.current !== lastDotSelPir;
 
-      _visiblePlayerIds.clear();
-      _visibleBotsScratch.length = 0;
-      _visibleRoamingScratch.length = 0;
-      _activeRoamingIds.clear();
-      for (let i = 0; i < visibleDots.length; i++) {
-        const d = visibleDots[i];
-        if (d.kind === 'player' && d.pirate) {
-          _visiblePlayerIds.add(d.pirate.id);
-        } else if (d.kind === 'bot' && d.bot) {
-          _visibleBotsScratch.push(d.bot);
-        } else if (d.kind === 'roaming_npc' && d.roamingNpc) {
-          _visibleRoamingScratch.push(d.roamingNpc);
-          _activeRoamingIds.add(d.roamingNpc.def.id);
+      if (needsDotRefresh) {
+        lastDotBucket = dotBucket;
+        lastDotPirates = currentPirates;
+        lastDotBots = currentBots;
+        lastDotFilters = activeFilters;
+        lastDotSelPir = selectedPirateIdRef.current;
+
+        const activeRoaming = getActiveRoamingShipNpcs(currentIslands, dotBucket * 2000);
+        const dotCandidates = buildMapDotCandidates(
+          currentPirates,
+          currentBots,
+          activeRoaming,
+          selectedPirateIdRef.current
+        );
+        const { visible: visibleDots } = filterAndRankMapDots(
+          dotCandidates,
+          activeFilters,
+          MAX_IMPORTANT_RED_DOTS
+        );
+
+        _visiblePlayerIds.clear();
+        _visibleBotsScratch.length = 0;
+        _visibleRoamingScratch.length = 0;
+        _activeRoamingIds.clear();
+        for (let i = 0; i < visibleDots.length; i++) {
+          const d = visibleDots[i];
+          if (d.kind === 'player' && d.pirate) {
+            _visiblePlayerIds.add(d.pirate.id);
+          } else if (d.kind === 'bot' && d.bot) {
+            _visibleBotsScratch.push(d.bot);
+          } else if (d.kind === 'roaming_npc' && d.roamingNpc) {
+            _visibleRoamingScratch.push(d.roamingNpc);
+            _activeRoamingIds.add(d.roamingNpc.def.id);
+          }
         }
       }
 
@@ -1923,21 +1988,21 @@ export const GlobeCanvas: React.FC<GlobeCanvasProps> = ({
               };
 
               if (entry.kind === 'boss') {
-                badge.style.backgroundColor = 'rgba(76, 5, 25, 0.95)';
-                badge.style.borderColor = '#fb7185';
-                badge.style.color = '#ffe4e6';
+                badge.style.backgroundColor = 'rgba(255, 241, 242, 0.92)';
+                badge.style.borderColor = '#e11d48';
+                badge.style.color = '#881337';
               } else if (entry.kind === 'miniboss') {
-                badge.style.backgroundColor = 'rgba(67, 20, 7, 0.94)';
-                badge.style.borderColor = '#fb923c';
-                badge.style.color = '#ffedd5';
+                badge.style.backgroundColor = 'rgba(255, 247, 237, 0.92)';
+                badge.style.borderColor = '#ea580c';
+                badge.style.color = '#9a3412';
               } else if (entry.kind === 'player') {
-                badge.style.backgroundColor = 'rgba(11, 21, 38, 0.96)';
-                badge.style.borderColor = '#facc15';
-                badge.style.color = '#fef08a';
-              } else {
-                badge.style.backgroundColor = 'rgba(251, 191, 36, 0.95)';
-                badge.style.borderColor = '#fef3c7';
+                badge.style.backgroundColor = 'rgba(255, 255, 255, 0.92)';
+                badge.style.borderColor = '#d97706';
                 badge.style.color = '#0f172a';
+              } else {
+                badge.style.backgroundColor = 'rgba(254, 243, 199, 0.94)';
+                badge.style.borderColor = '#d97706';
+                badge.style.color = '#78350f';
               }
             }
           }
@@ -2013,8 +2078,8 @@ export const GlobeCanvas: React.FC<GlobeCanvasProps> = ({
                 zoomWeatherEl.style.display = 'block';
                 zoomWeatherEl.style.left = `${wxX}px`;
                 zoomWeatherEl.style.top = `${Math.max(54, wxY - yLift)}px`;
-                zoomWeatherEl.style.borderColor = fruitDebuffActive ? '#fb7185' : wx.color;
-                zoomWeatherEl.style.color = fruitDebuffActive ? '#fecdd3' : wx.color;
+                zoomWeatherEl.style.borderColor = fruitDebuffActive ? '#e11d48' : wx.color;
+                zoomWeatherEl.style.color = fruitDebuffActive ? '#be123c' : wx.color;
                 zoomWeatherEl.textContent = fruitDebuffActive
                   ? `Clima: ${wx.label} · Debuff Fruta`
                   : `Clima: ${wx.label}`;
@@ -2137,10 +2202,10 @@ export const GlobeCanvas: React.FC<GlobeCanvasProps> = ({
           badge.style.left = `${rx}px`;
           badge.style.top = `${ry}px`;
           badge.style.backgroundColor = npc.def.isSpecialEvent
-            ? 'rgba(120, 53, 15, 0.94)'
-            : 'rgba(8, 28, 52, 0.94)';
-          badge.style.borderColor = npc.def.isSpecialEvent ? '#facc15' : '#38bdf8';
-          badge.style.color = npc.def.isSpecialEvent ? '#fef08a' : '#bae6fd';
+            ? 'rgba(255, 251, 235, 0.94)'
+            : 'rgba(240, 249, 255, 0.94)';
+          badge.style.borderColor = npc.def.isSpecialEvent ? '#d97706' : '#0284c7';
+          badge.style.color = npc.def.isSpecialEvent ? '#92400e' : '#0369a1';
           badge.onclick = (ev) => {
             ev.stopPropagation();
             onSelectRoamingNpcRef.current?.(npc.def.id);
@@ -2192,6 +2257,8 @@ export const GlobeCanvas: React.FC<GlobeCanvasProps> = ({
       disposed = true;
       loopActive = false;
       resumeLoopRef.current = null;
+      adjustZoomRef.current = null;
+      resetZoomLatchRef.current = null;
       document.removeEventListener('visibilitychange', handleVisibility);
       cancelAnimationFrame(frameId);
       clearTimeout(frameId);
@@ -2235,6 +2302,48 @@ export const GlobeCanvas: React.FC<GlobeCanvasProps> = ({
         ref={labelLayerRef}
         className="pointer-events-none absolute inset-0 overflow-hidden"
       />
+
+      {!isTitleScreen && characterFocus && !paused && (
+        <div
+          data-testid="globe-zoom-toolbar"
+          className="pointer-events-auto fixed bottom-20 md:bottom-4 right-3 z-30 flex items-center gap-1.5 rounded-xl border border-white/80 bg-white/84 backdrop-blur-sm p-1.5 shadow-[0_14px_38px_rgba(15,23,42,0.16)]"
+        >
+          <button
+            type="button"
+            data-testid="globe-zoom-in-btn"
+            onClick={() => adjustZoomRef.current?.(0.78)}
+            aria-label="Acercar vista"
+            title="Acercar hacia el Mapa 2D"
+            className="flex h-8 w-8 items-center justify-center rounded-lg border border-sky-200 bg-sky-50/90 text-slate-800 hover:border-amber-500 hover:bg-white cursor-pointer"
+          >
+            <ZoomIn className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            data-testid="globe-zoom-out-btn"
+            onClick={() => adjustZoomRef.current?.(1.22)}
+            aria-label="Alejar vista"
+            title="Alejar globo 3D"
+            className="flex h-8 w-8 items-center justify-center rounded-lg border border-sky-200 bg-sky-50/90 text-slate-800 hover:border-amber-500 hover:bg-white cursor-pointer"
+          >
+            <ZoomOut className="h-4 w-4" />
+          </button>
+          <span className="px-1.5 font-mono-num text-[11px] font-bold text-sky-700">
+            Globo 3D
+          </span>
+          {onFocusMyShip && (
+            <button
+              type="button"
+              data-testid="globe-center-ship-btn"
+              onClick={onFocusMyShip}
+              className="flex items-center gap-1 rounded-lg border border-sky-200 bg-sky-50/90 px-2.5 py-1.5 text-[11px] font-bold text-amber-800 hover:border-amber-500 hover:bg-white cursor-pointer"
+            >
+              <LocateFixed className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Mi barco</span>
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 };

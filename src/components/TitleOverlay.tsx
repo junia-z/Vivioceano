@@ -23,12 +23,12 @@ export const TitleOverlay: React.FC<TitleOverlayProps> = ({
 }) => {
   return (
     <div className="pointer-events-none fixed inset-0 z-20 flex flex-col justify-between p-6 md:p-12">
-      {/* Subtle left-side scrim for crisp typography legibility without blurring WebGL */}
+      {/* Bright coastal sea-mist gradient scrim keeping 3D globe radiant on the right */}
       <div
         className="pointer-events-none absolute inset-y-0 left-0 w-full max-w-2xl"
         style={{
           background:
-            'linear-gradient(90deg, rgba(6,13,24,0.94) 0%, rgba(6,13,24,0.72) 65%, rgba(6,13,24,0) 100%)',
+            'linear-gradient(90deg, rgba(240,249,255,0.92) 0%, rgba(240,249,255,0.74) 62%, rgba(240,249,255,0) 100%)',
         }}
       />
 
@@ -39,7 +39,7 @@ export const TitleOverlay: React.FC<TitleOverlayProps> = ({
           height="88"
           viewBox="0 0 24 24"
           shapeRendering="crispEdges"
-          className="mb-5 drop-shadow-[0_8px_20px_rgba(0,0,0,0.75)]"
+          className="mb-5 drop-shadow-[0_10px_22px_rgba(15,23,42,0.22)]"
           aria-hidden="true"
         >
           <rect x="4" y="1" width="16" height="22" fill="#0b172a" />
@@ -76,20 +76,20 @@ export const TitleOverlay: React.FC<TitleOverlayProps> = ({
           <rect x="13" y="17" width="1" height="3" fill="#94a3b8" />
         </svg>
 
-        <div className="mb-2 text-xs font-bold uppercase tracking-[0.26em] text-cyan-300">
+        <div className="mb-2 text-xs font-extrabold uppercase tracking-[0.26em] text-teal-700">
           Grand Line · Nuevo Mundo
         </div>
 
-        <h1 className="font-display text-4xl font-black tracking-tight text-amber-50 sm:text-5xl md:text-6xl leading-[1.06] [text-wrap:balance]">
+        <h1 className="font-display text-4xl font-black tracking-tight text-slate-900 sm:text-5xl md:text-6xl leading-[1.06] [text-wrap:balance]">
           Vivid Ocean
         </h1>
 
-        <p className="mt-4 max-w-md text-base leading-relaxed text-slate-300">
+        <p className="mt-4 max-w-md text-base leading-relaxed font-medium text-slate-700">
           Crea tu propio corsario pixel art, sigue únicamente su aventura por los Cuatro Mares y el
           Grand Line, y guarda tu cuenta con Google.
         </p>
 
-        <div className="mt-6 flex flex-wrap items-center gap-3 text-xs font-medium text-amber-300/90 font-mono-num">
+        <div className="mt-6 flex flex-wrap items-center gap-3 text-xs font-bold text-amber-800 font-mono-num">
           <span>
             {totalPirates === 0
               ? 'Sin bots · Solo tus piratas'
@@ -106,7 +106,7 @@ export const TitleOverlay: React.FC<TitleOverlayProps> = ({
             type="button"
             data-start="true"
             onClick={onStart}
-            className="rounded-lg bg-[#f5b82e] px-7 py-3.5 text-base font-extrabold tracking-wide text-slate-950 shadow-[0_10px_28px_rgba(245,184,46,0.35)] hover:bg-amber-300 active:scale-[0.98] transition-all cursor-pointer whitespace-nowrap"
+            className="rounded-lg bg-[#f5b82e] px-7 py-3.5 text-base font-extrabold tracking-wide text-slate-950 shadow-[0_10px_28px_rgba(245,184,46,0.38)] hover:bg-amber-300 active:scale-[0.98] transition-all cursor-pointer whitespace-nowrap"
           >
             Zarpar al Mar
           </button>
@@ -115,19 +115,19 @@ export const TitleOverlay: React.FC<TitleOverlayProps> = ({
             type="button"
             disabled={authBusy}
             onClick={onAuthAction}
-            className="flex items-center gap-2 rounded-lg border border-slate-600/80 bg-[#0b172a]/95 px-5 py-3.5 text-sm font-bold text-slate-100 hover:border-amber-400 hover:text-amber-200 transition-colors cursor-pointer disabled:opacity-60 whitespace-nowrap"
+            className="flex items-center gap-2 rounded-lg border border-sky-200 bg-white/80 backdrop-blur-md px-5 py-3.5 text-sm font-bold text-slate-800 shadow-[0_8px_24px_rgba(15,23,42,0.12)] hover:border-amber-500 hover:bg-white transition-colors cursor-pointer disabled:opacity-60 whitespace-nowrap"
           >
             {user ? (
               <>
-                <ShieldCheck className="h-4 w-4 text-emerald-400" />
+                <ShieldCheck className="h-4 w-4 text-emerald-600" />
                 <span className="max-w-[160px] truncate">
                   {user.displayName || user.email || 'Cuenta Google'}
                 </span>
-                <LogOut className="h-3.5 w-3.5 text-slate-400 ml-1" />
+                <LogOut className="h-3.5 w-3.5 text-slate-500 ml-1" />
               </>
             ) : (
               <>
-                <LogIn className="h-4 w-4 text-amber-300" />
+                <LogIn className="h-4 w-4 text-amber-600" />
                 <span>{authBusy ? 'Conectando...' : 'Entrar con Google'}</span>
               </>
             )}
@@ -137,14 +137,14 @@ export const TitleOverlay: React.FC<TitleOverlayProps> = ({
         {authNotice && (
           <div
             role="status"
-            className="pointer-events-auto mt-3 max-w-md rounded-lg border border-amber-500/40 bg-[#081221]/95 px-3.5 py-2 text-xs text-amber-200"
+            className="pointer-events-auto mt-3 max-w-md rounded-lg border border-amber-400/60 bg-white/88 backdrop-blur-sm px-3.5 py-2 text-xs font-semibold text-amber-900 shadow-md"
           >
             {authNotice}
           </div>
         )}
       </div>
 
-      <div className="relative z-10 text-xs text-slate-400">
+      <div className="relative z-10 inline-block self-start rounded-lg bg-white/70 backdrop-blur-sm border border-sky-200/70 px-3 py-1 text-xs font-medium text-slate-700 shadow-sm">
         Arrastra el globo para girar · Rueda para acercar · Enter o Espacio para zarpar
       </div>
     </div>

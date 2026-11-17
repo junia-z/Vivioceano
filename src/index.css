@@ -16,8 +16,8 @@
     padding: 0;
     overflow: hidden;
     font-family: var(--font-sans);
-    background-color: #060d18;
-    color: #f1f5f9;
+    background-color: #e0f2fe;
+    color: #0f172a;
   }
 }
 
@@ -35,14 +35,14 @@
   width: 6px;
 }
 .nautical-scroll::-webkit-scrollbar-track {
-  background: rgba(8, 15, 28, 0.5);
+  background: rgba(224, 242, 254, 0.55);
 }
 .nautical-scroll::-webkit-scrollbar-thumb {
-  background: rgba(245, 184, 46, 0.35);
+  background: rgba(14, 116, 144, 0.32);
   border-radius: 3px;
 }
 .nautical-scroll::-webkit-scrollbar-thumb:hover {
-  background: rgba(245, 184, 46, 0.6);
+  background: rgba(14, 116, 144, 0.55);
 }
 
 /* Wanted Poster parchment texture */
@@ -56,15 +56,17 @@
 }
 
 .wizard-blueprint-grid {
-  background-color: #081220;
+  background-color: rgba(240, 249, 255, 0.86);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
   background-image:
-    linear-gradient(to right, rgba(56, 189, 248, 0.06) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(56, 189, 248, 0.06) 1px, transparent 1px);
+    linear-gradient(to right, rgba(14, 165, 233, 0.11) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(14, 165, 233, 0.11) 1px, transparent 1px);
   background-size: 28px 28px;
 }
 
 .stage-spotlight {
-  background: radial-gradient(circle at 50% 45%, rgba(245, 184, 46, 0.14) 0%, rgba(56, 189, 248, 0.07) 40%, transparent 72%);
+  background: radial-gradient(circle at 50% 45%, rgba(245, 184, 46, 0.22) 0%, rgba(56, 189, 248, 0.14) 45%, transparent 74%);
 }
 
 @keyframes pirateStepHop {
